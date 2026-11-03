@@ -5,6 +5,7 @@ import { HOURS_PER_YEAR, STATE, ROLE, calendar, seasonalOffset, AGENT_BYTES, MSG
 import { Culture } from './names.js';
 import { SpatialHash } from './spatial.js';
 import { Weather } from './weather.js';
+import { maybeTalk, moodOf } from './talk.js';
 
 const YEAR = HOURS_PER_YEAR;
 const N = GRID * GRID;
@@ -14,6 +15,8 @@ const PALETTE = ['#c0392b', '#2e6fd8', '#e0a526', '#27ae60', '#8e44ad', '#16a2a2
 const dist = (a, b) => Math.hypot(a.x - b.x, a.z - b.z);
 
 let PID = 1, KID = 1;
+export { Person, Kingdom };
+export const ids = { get: () => ({ PID, KID }), set: (o) => { PID = o.PID; KID = o.KID; } };
 
 class Person {
   constructor(o) {
@@ -51,7 +54,7 @@ class Kingdom {
 }
 
 export class Simulation {
-  constructor({ seed = 20261103, hoursPerSecond = 1, maxPopulation = 4000 } = {}) {
+  constructor({ seed = 20261103, hoursPerSecond = 1, maxPopulation = 4000, restore = null } = {}) {
     this.seed = seed; this.hps = hoursPerSecond; this.maxPop = maxPopulation;
     this.rand = mulberry32((seed ^ Date.now()) >>> 0);
     const t0 = Date.now();
@@ -74,7 +77,8 @@ export class Simulation {
     this._wfx = {};
     this.landVersion = 0;
     this.capitalId = 0;
-    this.genesis();
+    this.talks = []; this.talkSeq = 0;
+    if (restore) restore(this); else this.genesis();
   }
 
   // ---------------------------------------------------------------- setup
@@ -211,6 +215,7 @@ export class Simulation {
     this.stormDamage();
     this.diseaseSpread();
     if (this.seconds % 4 === 0) this.society();
+    if (this.seconds % 2 === 0) maybeTalk(this);
     this._biasT += 1;
     if (this._biasT >= 20) { this._biasT = 0; this.updateBias(); }
     this._landT += 1;
@@ -642,6 +647,7 @@ export class Simulation {
     const tt = p.task?.type;
     if (tt === 'fight' || (tt === 'flee' && p.task.t < 8)) return;
     if (tt === 'drink' || (tt === 'eat' && p.hydration > 0.2)) return;
+    if (tt === 'talk' && !critical && p.task.until > this.realTime && e.danger < 0.4) return;
     // people finish what they start, unless survival demands otherwise
     if (!critical && (tt === 'farm' || tt === 'mine' || tt === 'build' || tt === 'migrate' || tt === 'court' || tt === 'march' || tt === 'defend')) return;
     if (!critical && tt === 'rest' && p.energy < 0.9) return;
@@ -1003,6 +1009,15 @@ export class Simulation {
             }
           }
         }
+        break;
+      }
+      case 'talk': {
+        const q = this.byId.get(t.partner);
+        p.state = STATE.IDLE;
+        if (!q || !q.alive || this.realTime > t.until) { p.task = null; break; }
+        const d = Math.hypot(q.x - p.x, q.z - p.z);
+        if (d > 2.2) this.moveTo(p, q.x, q.z, walk, dt), p.state = STATE.WALK;
+        p.heading = Math.atan2(q.x - p.x, q.z - p.z);
         break;
       }
       case 'flee':
@@ -1413,7 +1428,7 @@ export class Simulation {
       buf.writeUInt8((p.sex === 'F' ? 1 : 0) | (ag << 1) | (role << 3) | (p.pregnant ? 64 : 0) | (p.carry > 0.5 || p.carryMin > 0.5 ? 128 : 0), o + 11);
       buf.writeUInt8(Math.max(0, Math.min(255, Math.round(p.health * 2.55))), o + 12);
       buf.writeUInt8(Math.round(((p.heading % 6.2832 + 6.2832) % 6.2832) / 6.2832 * 255), o + 13);
-      buf.writeUInt8((p.sick > 0 ? 1 : 0) | (p.carryMin > 0.5 ? 2 : 0), o + 14);
+      buf.writeUInt8((p.sick > 0 ? 1 : 0) | (p.carryMin > 0.5 ? 2 : 0) | (moodOf(this, p) << 2) | (p.task?.type === 'talk' ? 32 : 0), o + 14);
       buf.writeUInt8(Math.min(255, Math.floor(p.ageY * 2)), o + 15);
       o += AGENT_BYTES;
     }
@@ -1454,7 +1469,7 @@ export class Simulation {
       t: 'state', time: this.time, rt: this.realTime, hps: this.hps, cal, capital: this.capitalId,
       pop: this.people.length, stats: this.stats, kingdoms: ks, storms: this.weather.serialize(),
       strikes: this.weather.strikes.slice(), wind: { x: +this.weather.wind.x.toFixed(2), z: +this.weather.wind.z.toFixed(2), s: +this.weather.wind.base.toFixed(1) },
-      events: ev, fx: this.fx.splice(0), ruins: this.ruins,
+      events: ev, fx: this.fx.splice(0), ruins: this.ruins, talks: this.talks.filter((c) => this.realTime - c.t < 25),
     };
   }
 

@@ -11,6 +11,8 @@ import { Buildings } from './buildings.js';
 import { People } from './people.js';
 import { WeatherFX } from './weather.js';
 import { UI } from './ui.js';
+import { AudioSys } from './audio.js';
+import { Cinema } from './cinema.js';
 
 const $ = (id) => document.getElementById(id);
 const setLoad = (msg, pct) => { $('load-msg').textContent = msg; $('load-bar').style.width = pct + '%'; };
@@ -22,6 +24,9 @@ class App {
     this.showTerritory = true; this.showLabels = true; this.follow = 0; this.selected = null;
     this.colorCache = new Map();
     this.req = 0;
+    this.talks = new Map(); this.names = new Map(); this.thoughtCb = new Map();
+    this.audio = new AudioSys();
+    this.bootAt = performance.now();
     this.connect();
   }
 
@@ -60,6 +65,9 @@ class App {
       this.state = m; this.baseHours = m.time; this.baseAt = performance.now(); this.hps = m.hps;
       this.onState(m);
     } else if (m.t === 'inspect') {
+      if (m.name) this.names.set(m.id, (m.title ? m.title + ' ' : '') + m.name);
+      const cb = this.thoughtCb.get(m.req);
+      if (cb) { this.thoughtCb.delete(m.req); cb(m); return; }
       if (!this.ui.inspect || (this.ui.inspect.id === m.id && this.ui.inspect.kind === m.kind) || m.req === this.req) {
         if (m.kind === 'person') this.ui.showPerson(m); else this.ui.showKingdom(m);
       }
@@ -117,6 +125,12 @@ class App {
       return this.world.temp[ci] + seasonalOffset(yf) < 0.5;
     };
     this.ui = new UI(this);
+    this.cinema = new Cinema(this);
+    $('t-sound').onclick = async (e) => {
+      if (this.audio.on) { this.audio.disable(); e.target.textContent = '🔇 Sound off'; e.target.classList.remove('on'); }
+      else { await this.audio.enable(); e.target.textContent = '🔊 Sound on'; e.target.classList.add('on'); this.audio.say('Welcome to the Endless Kingdoms.', { kind: 'narrator' }); }
+    };
+    $('t-narrator').onclick = (e) => { this.audio.narratorOn = !this.audio.narratorOn; e.target.classList.toggle('on', this.audio.narratorOn); if (!this.audio.narratorOn) speechSynthesis?.cancel(); };
     this.ui.buildMinimapBase(this.world);
     setLoad('Waking the people…', 90); await nextFrame();
 
@@ -169,6 +183,21 @@ class App {
     this.ui.updateTop(m, this.hours());
     this.ui.renderRealms(m);
     this.ui.addEvents(m.events || []);
+    // cinematic narrator reads the chronicle in God mode
+    if (performance.now() - this.bootAt > 6000 && !this.cinema.active) {
+      for (const e of m.events || []) if (!e.minor) this.audio.say(e.text, { kind: 'narrator' });
+    }
+    for (const s of m.strikes || []) this.audio.thunder(Math.hypot(s[0] - this.controls.target.x, s[1] - this.controls.target.z));
+    // conversations: schedule each line in local time
+    const now = performance.now();
+    for (const c of m.talks || []) {
+      if (this.talks.has(c.id)) continue;
+      const start = now + (c.t - m.rt) * 1000;
+      const lineMs = 3400;
+      this.talks.set(c.id, { ...c, start, lineMs, end: start + c.lines.length * lineMs, voiced: new Set() });
+      for (const l of c.lines) this.names.set(l.s, l.n);
+    }
+    for (const [id, t] of this.talks) if (now > t.end + 4000) this.talks.delete(id);
     if (!this.autoInspect && new URLSearchParams(location.search).get('inspect') === 'ruler' && this.people.agents.size) {
       this.autoInspect = true; const k = m.kingdoms[0]; if (k?.ruler) { this.selectPerson(k.ruler.id, true); this.follow = k.ruler.id; }
     }
@@ -195,13 +224,16 @@ class App {
     this.send({ t: 'inspect', kind: 'person', id, req: this.req });
     if (fly) { const a = this.people.agents.get(id); if (a) this.flyTo(a.x, a.z, 28); }
   }
-  selectKingdom(id, fly) {
+  selectKingdom(id, fly, infoOnly) {
+    if (!infoOnly && this.cinema && !this.cinema.active) { this.cinema.start(id); }
     this.req++;
     this.ui.inspect = { kind: 'kingdom', id };
     this.send({ t: 'inspect', kind: 'kingdom', id, req: this.req });
     this.people.selected = 0; this.follow = 0;
-    if (fly) { const k = this.state?.kingdoms.find((x) => x.id === id); if (k) this.flyTo(k.x, k.z, 260); }
+    if (fly && !this.cinema?.active) { const k = this.state?.kingdoms.find((x) => x.id === id); if (k) this.flyTo(k.x, k.z, 260); }
   }
+  nameOf(id) { return this.names.get(id) || 'A villager'; }
+  requestThought(id, cb) { const req = ++this.req + 100000; this.thoughtCb.set(req, cb); this.send({ t: 'inspect', kind: 'person', id, req }); }
   onInspectClosed() { this.people.selected = 0; this.follow = 0; }
 
   setupPicking(canvas) {
@@ -237,6 +269,7 @@ class App {
       if (v.z < 1 && d < bd) { bd = d; best = k; }
     }
     if (best) { this.selectKingdom(best.id, false); return; }
+    if (this.cinema.active) return;
     const p = this.groundPoint(mx, my);
     if (p && this.state) {
       let bk = null, bdist = 1e9;
@@ -262,6 +295,7 @@ class App {
       const p = this.people.agents.get(this.follow);
       if (p) { const d = new THREE.Vector3(p.x, p.y, p.z).sub(c.target); c.target.add(d.multiplyScalar(0.12)); cam.position.add(d); }
     }
+    if (this.cinema.active) { this.cinema.update(dt); } else {
     c.update();
     // keep the focus on the ground and the camera above it
     const gy = w.gridHeight(c.target.x, c.target.z);
@@ -270,9 +304,11 @@ class App {
     const minY = Math.max(0, w.heightAt(cam.position.x, cam.position.z)) + 2.5;
     if (cam.position.y < minY) cam.position.y = minY;
     c.target.x = THREE.MathUtils.clamp(c.target.x, -HALF * 1.2, HALF * 1.2); c.target.z = THREE.MathUtils.clamp(c.target.z, -HALF * 1.2, HALF * 1.2);
+    }
     const dist = this.camDist();
     cam.near = THREE.MathUtils.clamp(dist * 0.003, 0.3, 30); cam.updateProjectionMatrix();
     c.panSpeed = 1; c.rotateSpeed = 0.6;
+    this.updateTalks();
 
     const hours = this.hours();
     const yf = (hours % 8760) / 8760;
@@ -292,6 +328,8 @@ class App {
     this.buildings.update(this.time, 1 - this.sky.daylight);
     this.weather.update(dt, this.time, cam, focus, wind, this.sky.daylight, this.sky.sunColor, this.scene.fog, this.state?.kingdoms);
     $('flash').style.opacity = this.weather.flash.toFixed(3);
+    this.audioT = (this.audioT || 0) - dt;
+    if (this.audio.on && this.audioT <= 0) { this.audioT = 0.25; this.audio.update(0.25, this.soundEnv(focus, camH, here, wind)); }
 
     this.labelT -= dt;
     if (this.labelT <= 0) { this.labelT = 0.05; this.updateLabels(camH); }
@@ -303,8 +341,63 @@ class App {
     this.renderer.render(this.scene, cam);
   }
 
+  soundEnv(focus, camH, here, wind) {
+    const w = this.world, ci = w.cellIndex(focus.x, focus.z);
+    let sea = 0;
+    for (const [dx, dz] of [[0, 0], [150, 0], [-150, 0], [0, 150], [0, -150], [300, 300], [-300, -300], [300, -300], [-300, 300]]) {
+      const c = w.cellIndex(focus.x + dx, focus.z + dz); if (c >= 0 && w.gh[c] < 0.5) sea += 1 / 9;
+    }
+    let village = 0, building = 0;
+    for (const k of this.state?.kingdoms || []) { const d = Math.hypot(k.x - focus.x, k.z - focus.z); if (d < k.r) village = Math.max(village, Math.min(1, Math.sqrt(k.pop) / 6) * (1 - d / k.r)); }
+    let battle = 0;
+    for (const a of this.people.list) {
+      if (Math.abs(a.x - focus.x) > 80 || Math.abs(a.z - focus.z) > 80) continue;
+      if (a.st === 8) battle++; else if (a.st === 12) building++;
+    }
+    let fire = 0;
+    for (const s of this.state?.storms || []) if (s.type === 'wildfire') { const d = Math.hypot(s.x - focus.x, s.z - focus.z); if (d < s.r + 300) fire = Math.max(fire, s.i * (1 - d / (s.r + 300))); }
+    const hr = this.skyHours() % 24;
+    return {
+      camH, wind: (wind.s || 3) + here.wind * 10, rain: Math.max(here.rain, here.snow * 0.3), nearSea: sea, nearRiver: ci >= 0 && w.rdist[ci] <= 1 ? 1 : ci >= 0 && w.rdist[ci] <= 3 ? 0.4 : 0,
+      village, night: hr < 5.5 || hr > 20.5, forest: ci >= 0 ? w.forest[ci] : 0, battle, fire, building,
+    };
+  }
+
+  // drive speech bubbles, voices and lip sync for conversations
+  updateTalks() {
+    const now = performance.now();
+    const focus = this.controls.target, camH = this.camera.position.y - focus.y;
+    const movieTalk = this.cinema.active && this.cinema.shot?.type === 'talk' ? this.cinema.shot.talk : null;
+    this.speechItems = [];
+    let sub = '';
+    for (const t of this.talks.values()) {
+      if (now < t.start || now > t.end) continue;
+      const li = Math.min(t.lines.length - 1, Math.floor((now - t.start) / t.lineMs));
+      const line = t.lines[li];
+      const a = this.people.agents.get(line.s);
+      if (!a) continue;
+      const near = Math.hypot(a.x - focus.x, a.z - focus.z) < 70 && camH < 120;
+      const inMovie = movieTalk && movieTalk.id === t.id;
+      if (!t.voiced.has(li)) {
+        t.voiced.add(li);
+        a.mouthUntil = t.start + (li + 1) * t.lineMs - 300; a.voiced = false;
+        if ((inMovie || (!this.cinema.active && near)) && this.audio.on) {
+          this.audio.say(line.text, {
+            kind: 'talk', seed: line.s, female: line.f, child: line.c === 1, elder: line.c === 2, volume: inMovie ? 1 : 0.8,
+            onstart: () => { a.voiced = true; a.mouthUntil = performance.now() + 30000; },
+            onboundary: () => { a.mouthPulse = 1; },
+            onend: () => { a.voiced = false; a.mouthUntil = 0; a.mouthPulse = 0; },
+          });
+        }
+      }
+      if (inMovie) sub = `<b>${line.n}:</b> ${line.text}`;
+      else if (!this.cinema.active && near && this.showLabels) this.speechItems.push({ key: 'sp' + t.id, cls: 'speech', x: a.x, y: a.y + 2.35, z: a.z, html: `<b>${line.n}</b>${line.text}` });
+    }
+    if (this.cinema.active) document.getElementById('mv-sub').innerHTML = sub;
+  }
+
   updateLabels(camH) {
-    const items = [];
+    const items = [...(this.speechItems || [])];
     const st = this.state;
     if (st && this.showLabels) {
       for (const k of st.kingdoms) {

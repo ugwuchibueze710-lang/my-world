@@ -5,6 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { Simulation } from './sim/simulation.js';
+import { serialize, restorer, createStore } from './sim/persist.js';
 import { DEFAULT_HOURS_PER_SECOND } from '../shared/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -15,8 +16,23 @@ const SEED = Number(process.env.WORLD_SEED) || 20261103;
 const MAX_POP = Number(process.env.MAX_POPULATION) || 4000;
 const TICK_MS = 100;
 
-const sim = new Simulation({ seed: SEED, hoursPerSecond: HPS, maxPopulation: MAX_POP });
-console.log(`[sim] started: seed=${SEED}, 1 real second = ${HPS} world hour(s), max population ${MAX_POP}`);
+// ---- load the saved timeline if there is one
+const store = await createStore();
+let restore = null;
+if (process.env.FRESH_WORLD !== '1') {
+  try { const buf = await store.load(); if (buf) restore = restorer(buf); } catch (e) { console.warn('[save] could not read save, starting fresh:', e.message); }
+}
+const sim = new Simulation({ seed: SEED, hoursPerSecond: HPS, maxPopulation: MAX_POP, restore });
+console.log(`[sim] ${restore ? 'resumed' : 'started new world'}: seed=${SEED}, 1 real second = ${HPS} world hour(s), saves: ${store.kind}`);
+let saving = false;
+async function saveNow(reason) {
+  if (saving) return; saving = true;
+  try { const t0 = Date.now(); const buf = serialize(sim); await store.save(buf); console.log(`[save] ${reason}: ${(buf.length / 1024).toFixed(0)} KB in ${Date.now() - t0} ms`); }
+  catch (e) { console.error('[save] failed', e); }
+  saving = false;
+}
+setInterval(() => saveNow('autosave'), (Number(process.env.SAVE_SECONDS) || 45) * 1000);
+for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => { console.log(`[save] ${sig}: saving before exit`); await saveNow('shutdown'); process.exit(0); });
 
 const app = express();
 app.disable('x-powered-by');

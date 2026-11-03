@@ -32,13 +32,13 @@ function humanGeometry(female) {
   P.push(part(new THREE.CylinderGeometry(0.055, 0.048, 0.58, 6).translate(ax, 1.13, 0), 0, 4));
   P.push(part(new THREE.SphereGeometry(0.055, 6, 4).translate(-ax, 0.82, 0), 1, 3));
   P.push(part(new THREE.SphereGeometry(0.055, 6, 4).translate(ax, 0.82, 0), 1, 4));
-  // neck + head + hair
+  // neck + big cartoon head (face is painted in the shader) + hair
   P.push(part(new THREE.CylinderGeometry(0.05, 0.06, 0.1, 6).translate(0, 1.5, 0), 1, 0));
-  P.push(part(new THREE.SphereGeometry(0.115, 10, 8).scale(0.92, 1.05, 1).translate(0, 1.64, 0), 1, 0));
-  P.push(part(new THREE.SphereGeometry(0.125, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55).translate(0, 1.655, -0.01), 4, 0));
-  if (female) P.push(part(new THREE.BoxGeometry(0.22, 0.32, 0.09).translate(0, 1.5, -0.1), 4, 0));
-  // nose for profile
-  P.push(part(new THREE.ConeGeometry(0.02, 0.05, 4).rotateX(Math.PI / 2).translate(0, 1.63, 0.115), 1, 0));
+  P.push(part(new THREE.SphereGeometry(0.155, 20, 16).scale(0.96, 1.04, 0.94).translate(0, 1.69, 0), 1, 0));
+  P.push(part(new THREE.SphereGeometry(0.165, 16, 8, 0, Math.PI * 2, 0, Math.PI * 0.4).rotateX(-0.42).translate(0, 1.705, -0.012), 4, 0));
+  P.push(part(new THREE.SphereGeometry(0.03, 6, 4).translate(-0.152, 1.68, 0), 1, 0)); // ears
+  P.push(part(new THREE.SphereGeometry(0.03, 6, 4).translate(0.152, 1.68, 0), 1, 0));
+  if (female) P.push(part(new THREE.BoxGeometry(0.29, 0.36, 0.1).translate(0, 1.6, -0.12), 4, 0));
   return mergeGeometries(P);
 }
 
@@ -54,8 +54,8 @@ export class People {
       sh.uniforms.uTime = this.uniforms.uTime;
       sh.vertexShader = sh.vertexShader
         .replace('#include <common>', `#include <common>
-          uniform float uTime; attribute float aPart; attribute float aLimb; attribute vec4 aAnim; attribute vec3 aHair;
-          varying float vPart; varying vec3 vSkin; varying vec3 vHair;
+          uniform float uTime; attribute float aPart; attribute float aLimb; attribute vec4 aAnim; attribute vec3 aHair; attribute vec2 aFace;
+          varying float vPart; varying vec3 vSkin; varying vec3 vHair; varying vec3 vLoc; varying vec2 vFace; varying float vBlink;
           mat3 rotX(float a){ float c=cos(a), s=sin(a); return mat3(1.,0.,0., 0.,c,s, 0.,-s,c); }`)
         .replace('#include <beginnormal_vertex>', `#include <beginnormal_vertex>
           float gait = aAnim.y, act = aAnim.z, ph = aAnim.x;
@@ -80,14 +80,59 @@ export class People {
           transformed = R * (transformed - pivot) + pivot;
           if (act > 1.5 && act < 2.5) { float b = 0.35 + 0.15 * sin(uTime * 4.5 + ph); if (transformed.y > 0.9) { transformed = rotX(b) * (transformed - vec3(0.0,0.9,0.0)) + vec3(0.0,0.9,0.0); } }
           transformed.y += gait > 0.5 ? abs(sw) * (gait > 1.5 ? 0.06 : 0.03) : 0.0;
-          vPart = aPart; vHair = aHair;
+          vPart = aPart; vHair = aHair; vLoc = position; vFace = aFace;
+          vBlink = step(0.965, fract(uTime * 0.27 + aAnim.x * 0.37));
           float tone = aAnim.w;
           vSkin = mix(vec3(0.95, 0.76, 0.62), vec3(0.32, 0.2, 0.13), tone);
         `);
       sh.fragmentShader = sh.fragmentShader
-        .replace('#include <common>', '#include <common>\nvarying float vPart; varying vec3 vSkin; varying vec3 vHair;')
+        .replace('#include <common>', `#include <common>
+          varying float vPart; varying vec3 vSkin; varying vec3 vHair; varying vec3 vLoc; varying vec2 vFace; varying float vBlink;
+          float ell(vec2 p, vec2 c, vec2 r){ vec2 d = (p - c) / r; return dot(d, d); }
+          // South Park-style face painted on the head sphere: big eyes, pupils, brows, expressive mouth
+          vec3 face(vec3 col){
+            vec3 d = vLoc - vec3(0.0, 1.69, 0.0);
+            if (d.z < 0.02 || length(d) > 0.175) return col;
+            vec2 f = d.xy / 0.15;
+            float mood = vFace.x, mouthOpen = vFace.y;
+            float happy = step(0.5, mood) * step(mood, 1.5), sad = step(1.5, mood) * step(mood, 2.5);
+            float angry = step(2.5, mood) * step(mood, 3.5), scared = step(3.5, mood);
+            // eyes
+            for (int i = 0; i < 2; i++) {
+              float sx = i == 0 ? -1.0 : 1.0;
+              vec2 ec = vec2(0.34 * sx, 0.14);
+              vec2 er = vec2(0.25, 0.3 * (1.0 - vBlink * 0.92)) * (1.0 + scared * 0.15);
+              float e = ell(f, ec, er);
+              if (e < 1.0) {
+                col = vec3(0.97);
+                vec2 pc = ec + vec2(-0.05 * sx, -0.02 + scared * 0.04);
+                float pr = scared > 0.5 ? 0.07 : 0.1;
+                if (vBlink < 0.5 && length(f - pc) < pr) col = vec3(0.04);
+                if (vBlink < 0.5 && length(f - pc - vec2(0.03, 0.03)) < 0.025) col = vec3(1.0);
+                // sad: droopy lids, angry: lids cut diagonally
+                float lid = sad * (f.y - (ec.y + 0.12 - 0.12 * sx * (f.x - ec.x) * 2.0)) + angry * (f.y - (ec.y + 0.1 + 0.6 * sx * (f.x - ec.x)));
+                if (lid > 0.0) col = vSkin * 0.85;
+              }
+              if (e > 1.0 && e < 1.3) col = mix(col, vec3(0.1), 0.6);
+              // brows
+              float tilt = angry * -0.55 + sad * 0.45 + scared * 0.2;
+              float by = ec.y + 0.36 + scared * 0.1 + tilt * sx * (f.x - ec.x) * -1.0;
+              if (abs(f.x - ec.x) < 0.2 && abs(f.y - by) < 0.035) col = vHair * 0.6;
+            }
+            // mouth
+            vec2 m = f - vec2(0.0, -0.42);
+            float curve = (happy * 0.9 - sad * 0.7 - angry * 0.4) * m.x * m.x;
+            if (mouthOpen > 0.05 || scared > 0.5) {
+              float h = max(mouthOpen * 0.17, scared * 0.09) + 0.02;
+              if (ell(m, vec2(0.0, curve * 0.5 - h * 0.3), vec2(0.17 + happy * 0.05, h)) < 1.0) col = vec3(0.25, 0.02, 0.03);
+              if (ell(m, vec2(0.0, curve * 0.5 - h * 0.85), vec2(0.09, h * 0.35)) < 1.0 && mouthOpen > 0.3) col = vec3(0.75, 0.25, 0.28);
+            } else if (abs(m.y - curve) < 0.028 && abs(m.x) < 0.2 + happy * 0.05) col = vec3(0.18, 0.05, 0.04);
+            // cheeks blush when happy
+            if (happy > 0.5 && (ell(f, vec2(0.45, -0.18), vec2(0.12, 0.08)) < 1.0 || ell(f, vec2(-0.45, -0.18), vec2(0.12, 0.08)) < 1.0)) col = mix(col, vec3(0.95, 0.5, 0.5), 0.35);
+            return col;
+          }`)
         .replace('#include <color_fragment>', `#include <color_fragment>
-          if (vPart > 0.5 && vPart < 1.5) diffuseColor.rgb = vSkin;
+          if (vPart > 0.5 && vPart < 1.5) diffuseColor.rgb = face(vSkin);
           else if (vPart > 1.5 && vPart < 2.5) diffuseColor.rgb = diffuseColor.rgb * 0.35 + vec3(0.07, 0.06, 0.05);
           else if (vPart > 2.5 && vPart < 3.5) diffuseColor.rgb = vec3(0.12, 0.08, 0.05);
           else if (vPart > 3.5) diffuseColor.rgb = vHair;`);
@@ -100,7 +145,8 @@ export class People {
       m.instanceColor.setUsage(THREE.DynamicDrawUsage);
       const anim = new THREE.InstancedBufferAttribute(new Float32Array(MAX_NEAR * 4), 4); anim.setUsage(THREE.DynamicDrawUsage);
       const hair = new THREE.InstancedBufferAttribute(new Float32Array(MAX_NEAR * 3), 3); hair.setUsage(THREE.DynamicDrawUsage);
-      geo.setAttribute('aAnim', anim); geo.setAttribute('aHair', hair);
+      const faceA = new THREE.InstancedBufferAttribute(new Float32Array(MAX_NEAR * 2), 2); faceA.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('aAnim', anim); geo.setAttribute('aHair', hair); geo.setAttribute('aFace', faceA);
       m.count = 0; m.castShadow = true; m.receiveShadow = true; m.frustumCulled = false;
       scene.add(m);
       return m;
@@ -179,6 +225,7 @@ export class People {
     const male = this.male, female = this.female;
     const mAnim = male.geometry.attributes.aAnim.array, fAnim = female.geometry.attributes.aAnim.array;
     const mHair = male.geometry.attributes.aHair.array, fHair = female.geometry.attributes.aHair.array;
+    const mFace = male.geometry.attributes.aFace.array, fFace = female.geometry.attributes.aFace.array;
     for (const a of this.list) {
       const t = Math.min(1, (now - a.t0) / 260);
       const nx = a.ax + (a.bx - a.ax) * t, nz = a.az + (a.bz - a.az) * t;
@@ -240,12 +287,17 @@ export class People {
       anim[idx * 4] = a.ph; anim[idx * 4 + 1] = gait; anim[idx * 4 + 2] = act; anim[idx * 4 + 3] = ((a.k * 0.37 + hash * 0.6) % 1);
       const hc = ag === 3 ? 0.75 : 0.05 + ((a.id * 0.371) % 1) * 0.3;
       hair[idx * 3] = hc; hair[idx * 3 + 1] = hc * (ag === 3 ? 1 : 0.75); hair[idx * 3 + 2] = hc * (ag === 3 ? 1 : 0.55);
+      const faceArr = female ? fFace : mFace;
+      // lip sync: speech boundaries pulse the mouth; otherwise flap while a line is being spoken
+      let mouth = 0;
+      if (a.mouthUntil > now) { a.mouthPulse = (a.mouthPulse || 0) * Math.pow(0.0005, 1 / 60); mouth = a.voiced ? Math.max(a.mouthPulse, 0.25 + 0.25 * Math.sin(time * 17 + a.ph)) : 0.45 + 0.45 * Math.sin(time * 15 + a.ph) * Math.sin(time * 6.3); }
+      faceArr[idx * 2] = (a.ex >> 2) & 7; faceArr[idx * 2 + 1] = Math.max(0, mouth);
       if (female) nf++; else nm++;
       if (lying || ag === 0) continue;
       // accessories (follow body yaw)
       const ch = Math.cos(a.hd), sn = Math.sin(a.hd);
       if ((role === 2 || role === 3) && nc < 600) {
-        P.set(nx, a.y + 1.74 * s, nz); Q.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, a.hd); S.set(s, s, s); M.compose(P, Q, S); this.crowns.setMatrixAt(nc++, M);
+        P.set(nx, a.y + 1.8 * s, nz); Q.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, a.hd); S.set(s * 1.25, s * 1.25, s * 1.25); M.compose(P, Q, S); this.crowns.setMatrixAt(nc++, M);
       }
       if ((role === 1 || role === 5) && ns < 4000) {
         P.set(nx + ch * 0.32 * s, a.y + 0.2, nz - sn * 0.32 * s);
@@ -253,7 +305,7 @@ export class People {
         S.set(s, s, s); M.compose(P, Q, S); this.spears.setMatrixAt(ns, M);
         P.set(nx - ch * 0.3 * s + sn * 0.12, a.y + 1.1 * s, nz + sn * 0.3 * s + ch * 0.12); Q.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, a.hd); M.compose(P, Q, S);
         this.shields.setMatrixAt(ns, M); this.shields.setColorAt(ns, col);
-        P.set(nx, a.y + 1.66 * s, nz); M.compose(P, Q, S); this.helmets.setMatrixAt(ns, M);
+        P.set(nx, a.y + 1.71 * s, nz); S.set(s * 1.22, s * 1.22, s * 1.22); M.compose(P, Q, S); this.helmets.setMatrixAt(ns, M); S.set(s, s, s);
         ns++;
       }
       if ((a.fl & 128) && nsk < 4000) {
@@ -263,7 +315,7 @@ export class People {
     }
     for (const [m, n] of [[this.male, nm], [this.female, nf]]) {
       m.count = n; m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true;
-      m.geometry.attributes.aAnim.needsUpdate = true; m.geometry.attributes.aHair.needsUpdate = true;
+      m.geometry.attributes.aAnim.needsUpdate = true; m.geometry.attributes.aHair.needsUpdate = true; m.geometry.attributes.aFace.needsUpdate = true;
     }
     this.crowns.count = nc; this.crowns.instanceMatrix.needsUpdate = true;
     for (const m of [this.spears, this.shields, this.helmets]) { m.count = ns; m.instanceMatrix.needsUpdate = true; }

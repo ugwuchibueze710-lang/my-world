@@ -70,7 +70,21 @@
     <div class="mm-legend"><span>N ↑</span><span id="mm-weather"></span></div>
   </div>
 
+  <div id="movie">
+    <div class="lb top"></div><div class="lb bottom"></div>
+    <div id="mv-title"></div>
+    <div id="mv-cap"></div>
+    <div id="mv-sub"></div>
+    <div id="mv-controls">
+      <button class="btn" id="mv-next" title="Cut to another shot">Next shot ▸</button>
+      <button class="btn" id="mv-info" title="Kingdom details">Info</button>
+      <button class="btn on" id="mv-god" title="Back to the free camera">⚡ God mode</button>
+    </div>
+  </div>
+
   <div id="toolbar">
+    <button class="tool" id="t-sound" title="Turn on natural sounds, voices and the narrator">🔇 Sound off</button>
+    <button class="tool on" id="t-narrator" title="Cinematic narrator reads the chronicle in God mode">🎙 Narrator</button>
     <button class="tool on" id="t-territory" title="Show kingdom borders">Borders</button>
     <button class="tool on" id="t-labels" title="Show names">Names</button>
     <button class="tool" id="t-overview" title="See the whole world">World view</button>
@@ -82,7 +96,9 @@
     <ul>
       <li><b>Scroll / pinch</b> zoom from the whole continent down to a single person</li>
       <li><b>Left-drag</b> move around · <b>Right-drag</b> rotate &amp; tilt</li>
-      <li><b>Click</b> a person, castle, or realm to inspect it · <b>Double-click</b> to fly there</li>
+      <li><b>Click a kingdom</b> (castle, name or realm list) to watch it as a <b>movie</b>; press <b>⚡ God mode</b> to return</li>
+      <li><b>Click</b> a person to inspect them · <b>Double-click</b> the ground to fly there</li>
+      <li>Turn on <b>🔇 Sound</b> for wind, birds, rain, battles, voices and the narrator</li>
       <li>Click the <b>minimap</b> to jump anywhere</li>
       <li>Nobody is scripted: every person decides for themselves when to work, eat, drink, marry, flee, fight or rebel. The weather is random.</li>
     </ul>

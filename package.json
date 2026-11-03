@@ -8,9 +8,12 @@
     "start": "node server/index.js",
     "dev": "HOURS_PER_SECOND=50 node server/index.js"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "express": "^4.21.2",
+    "redis": "^4.7.1",
     "three": "0.169.0",
     "ws": "^8.18.0"
   }

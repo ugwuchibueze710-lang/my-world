@@ -137,3 +137,28 @@ button { font: inherit; color: inherit; cursor: pointer; }
   #toolbar { right: 10px; bottom: 170px; flex-direction: column; transform: translateX(-160px); }
   #inspector { width: calc(100vw - 20px); top: auto; bottom: 170px; max-height: 45vh; }
 }
+
+/* ---------- speech bubbles ---------- */
+.lbl.speech { background: rgba(255,252,242,.95); color: #1d1a14; font-size: 12px; font-weight: 500; padding: 5px 9px; border-radius: 12px; max-width: 230px; white-space: normal; text-align: left; box-shadow: 0 3px 12px rgba(0,0,0,.35); pointer-events: none; transform: translate(-50%, -100%) translateY(-8px); }
+.lbl.speech b { display: block; font-size: 10px; color: #7a5b1d; letter-spacing: .02em; }
+.lbl.speech::after { content: ''; position: absolute; left: 50%; bottom: -6px; border: 6px solid transparent; border-top-color: rgba(255,252,242,.95); border-bottom: 0; transform: translateX(-50%); }
+
+/* ---------- movie mode ---------- */
+#movie { display: none; position: fixed; inset: 0; z-index: 8; pointer-events: none; }
+body.movie #movie { display: block; }
+body.movie #topbar, body.movie #realms, body.movie #chronicle, body.movie #minimap-wrap, body.movie #toolbar, body.movie #labels { opacity: 0; pointer-events: none; transition: opacity .6s; }
+body.movie #inspector { display: none !important; }
+body.movie.movie-info #inspector { display: flex !important; z-index: 12; top: 12vh; }
+.lb { position: absolute; left: 0; right: 0; height: 11vh; background: #000; transition: transform .8s; }
+.lb.top { top: 0; } .lb.bottom { bottom: 0; }
+#mv-title { position: absolute; left: 0; right: 0; top: 36%; text-align: center; opacity: 0; transition: opacity 1.4s; text-shadow: 0 2px 20px #000; }
+#mv-title.show { opacity: 1; }
+#mv-title .t1 { font-family: Cinzel, serif; font-weight: 900; font-size: clamp(26px, 4.4vw, 58px); letter-spacing: .12em; color: #f6dc97; }
+#mv-title .t2 { font-family: Cinzel, serif; font-size: clamp(13px, 1.5vw, 19px); color: #e8e0cc; margin-top: 8px; letter-spacing: .08em; }
+#mv-sub { position: absolute; left: 50%; bottom: calc(11vh + 22px); transform: translateX(-50%); max-width: 70vw; text-align: center; font-size: clamp(15px, 1.6vw, 22px); color: #fff; text-shadow: 0 2px 4px #000, 0 0 14px #000; line-height: 1.35; }
+#mv-sub b { color: #f3d68f; font-weight: 600; }
+#mv-cap { position: absolute; left: 3vw; bottom: 3.2vh; font-size: 13px; color: #d9d2c0; max-width: 60vw; }
+#mv-cap b { font-family: Cinzel, serif; color: #f3d68f; letter-spacing: .04em; }
+#mv-controls { position: absolute; right: 2vw; bottom: 2.6vh; display: flex; gap: 6px; pointer-events: auto; }
+#mv-controls .btn { background: rgba(20,20,20,.7); }
+#mv-controls .btn.on { background: var(--gold); color: #1a1408; }
