@@ -22,12 +22,12 @@ let restore = null;
 if (process.env.FRESH_WORLD !== '1') {
   try { const buf = await store.load(); if (buf) restore = restorer(buf); } catch (e) { console.warn('[save] could not read save, starting fresh:', e.message); }
 }
-const sim = new Simulation({ seed: SEED, hoursPerSecond: HPS, maxPopulation: MAX_POP, restore });
+const sim = new Simulation({ seed: SEED, hoursPerSecond: HPS, maxPopulation: MAX_POP, restore, daySeconds: Number(process.env.DAY_SECONDS) || 360 });
 console.log(`[sim] ${restore ? 'resumed' : 'started new world'}: seed=${SEED}, 1 real second = ${HPS} world hour(s), saves: ${store.kind}`);
-let saving = false;
+let saving = false, lastSaveAt = 0;
 async function saveNow(reason) {
   if (saving) return; saving = true;
-  try { const t0 = Date.now(); const buf = serialize(sim); await store.save(buf); console.log(`[save] ${reason}: ${(buf.length / 1024).toFixed(0)} KB in ${Date.now() - t0} ms`); }
+  try { const t0 = Date.now(); const buf = serialize(sim); await store.save(buf); lastSaveAt = Date.now(); console.log(`[save] ${reason}: ${(buf.length / 1024).toFixed(0)} KB in ${Date.now() - t0} ms`); }
   catch (e) { console.error('[save] failed', e); }
   saving = false;
 }
@@ -41,7 +41,7 @@ const fresh = { maxAge: 0, etag: true, lastModified: true, setHeaders: (res) => 
 app.use(express.static(path.join(ROOT, 'public'), fresh));
 app.use('/shared', express.static(path.join(ROOT, 'shared'), fresh));
 app.use('/vendor/three', express.static(path.join(ROOT, 'node_modules/three'), { maxAge: '7d' }));
-app.get('/healthz', (req, res) => res.json({ ok: true, pop: sim.people.length, kingdoms: sim.kingdoms.size, time: sim.time }));
+app.get('/healthz', (req, res) => res.json({ ok: true, pop: sim.people.length, kingdoms: sim.kingdoms.size, time: sim.time, resumed: !!restore, saves: store.kind, lastSave: lastSaveAt ? Math.round((Date.now() - lastSaveAt) / 1000) + 's ago' : 'never' }));
 app.get('/api/stats', (req, res) => res.json({ pop: sim.people.length, kingdoms: sim.kingdoms.size, stats: sim.stats, tickMs: +tickCost.toFixed(2) }));
 
 const server = http.createServer(app);

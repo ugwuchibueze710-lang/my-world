@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import { Person, Kingdom, ids } from './simulation.js';
 import { Culture } from './names.js';
+import { ensurePersona } from './social.js';
 import { mulberry32 } from '../../shared/noise.js';
 
 const VERSION = 1;
@@ -25,7 +26,8 @@ export function serialize(sim) {
   const data = {
     v: VERSION, savedAt: Date.now(), seed: sim.seed, time: sim.time, realTime: sim.realTime, ids: ids.get(),
     people, kingdoms, events: sim.events.slice(-250), eventSeq: sim.eventSeq, ruins: sim.ruins, stats: sim.stats,
-    capitalId: sim.capitalId, seconds: sim.seconds, talkSeq: sim.talkSeq,
+    capitalId: sim.capitalId, seconds: sim.seconds, talkSeq: sim.talkSeq, dayClock: sim.dayClock,
+    secrets: sim.secrets, secretSeq: sim.secretSeq, plots: sim.plots, ravens: sim.ravens,
     weather: { storms: sim.weather.storms, nextId: sim.weather.nextId, windAngle: sim.weather.windAngle },
     food: f32(sim.food), cult: f32(sim.cult), minLeft: f32(sim.minLeft), dynBias: f32(sim.dynBias),
   };
@@ -55,6 +57,9 @@ export function restorer(buf) {
     }
     sim.events = d.events; sim.eventSeq = d.eventSeq; sim.ruins = d.ruins; sim.stats = d.stats;
     sim.capitalId = d.capitalId; sim.seconds = d.seconds || 0; sim.talkSeq = d.talkSeq || 0;
+    if (d.dayClock !== undefined) sim.dayClock = d.dayClock;
+    sim.secrets = d.secrets || []; sim.secretSeq = d.secretSeq || 0; sim.plots = d.plots || []; sim.ravens = d.ravens || [];
+    for (const p of sim.people) ensurePersona(p, sim.rand);
     sim.weather.storms = d.weather.storms; sim.weather.nextId = d.weather.nextId; sim.weather.windAngle = d.weather.windAngle;
     unf32(d.food, sim.food); unf32(d.cult, sim.cult); unf32(d.minLeft, sim.minLeft); unf32(d.dynBias, sim.dynBias);
     const away = Math.round((Date.now() - d.savedAt) / 1000);

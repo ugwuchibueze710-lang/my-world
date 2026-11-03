@@ -13,6 +13,8 @@ import { WeatherFX } from './weather.js';
 import { UI } from './ui.js';
 import { AudioSys } from './audio.js';
 import { Cinema } from './cinema.js';
+import { Characters } from './characters.js';
+import { Music } from './music.js';
 
 const $ = (id) => document.getElementById(id);
 const setLoad = (msg, pct) => { $('load-msg').textContent = msg; $('load-bar').style.width = pct + '%'; };
@@ -26,6 +28,7 @@ class App {
     this.req = 0;
     this.talks = new Map(); this.names = new Map(); this.thoughtCb = new Map();
     this.audio = new AudioSys();
+    this.music = new Music(this.audio);
     this.bootAt = performance.now();
     this.connect();
   }
@@ -118,6 +121,7 @@ class App {
     this.veg = new Vegetation(this.scene, this.world);
     this.buildings = new Buildings(this.scene, this.world);
     this.people = new People(this.scene, this.world);
+    this.chars = new Characters(this.scene, this.world, this.people);
     this.weather = new WeatherFX(this.scene, this.world);
     this.weather.coldAt = (x, z) => {
       const ci = this.world.cellIndex(x, z); if (ci < 0) return false;
@@ -126,10 +130,9 @@ class App {
     };
     this.ui = new UI(this);
     this.cinema = new Cinema(this);
-    $('t-sound').onclick = async (e) => {
-      if (this.audio.on) { this.audio.disable(); e.target.textContent = '🔇 Sound off'; e.target.classList.remove('on'); }
-      else { await this.audio.enable(); e.target.textContent = '🔊 Sound on'; e.target.classList.add('on'); this.audio.say('Welcome to the Endless Kingdoms.', { kind: 'narrator' }); }
-    };
+    // sound is always on; browsers only allow audio after the first click or key press
+    const startSound = () => { removeEventListener('pointerdown', startSound, true); removeEventListener('keydown', startSound, true); if (!this.audio.on) this.audio.enable().then(() => this.audio.say('Welcome to the Endless Kingdoms. Watch closely. Nothing here is written in advance.', { kind: 'narrator' })); };
+    addEventListener('pointerdown', startSound, true); addEventListener('keydown', startSound, true);
     $('t-narrator').onclick = (e) => { this.audio.narratorOn = !this.audio.narratorOn; e.target.classList.toggle('on', this.audio.narratorOn); if (!this.audio.narratorOn) speechSynthesis?.cancel(); };
     this.ui.buildMinimapBase(this.world);
     setLoad('Waking the people…', 90); await nextFrame();
@@ -145,7 +148,9 @@ class App {
   }
 
   hours() { return this.baseHours + ((performance.now() - this.baseAt) / 1000) * this.hps; }
-  skyHours() { const h = this.hours(); return this.forceHour !== undefined ? Math.floor(h / 24) * 24 + this.forceHour : h; }
+  // the sun follows the life clock (one day = DAY_SECONDS real seconds); years follow the calendar
+  dayNow() { const s = this.state; if (!s || s.day === undefined) return 0.27; return s.day + (performance.now() - this.baseAt) / 1000 / (s.dayS || 360); }
+  skyHours() { const d = this.dayNow(); return this.forceHour !== undefined ? Math.floor(d) * 24 + this.forceHour : d * 24; }
   camDist() { return this.camera.position.distanceTo(this.controls.target); }
 
   onState(m) {
@@ -180,12 +185,18 @@ class App {
     this.weather.setStorms(m.storms);
     this.terrain.setEffects(m.storms, m.cal, m.time);
     for (const s of m.strikes || []) this.weather.strike(s[0], s[1], this.controls.target);
-    this.ui.updateTop(m, this.hours());
+    this.ui.updateTop(m, this.hours(), this.skyHours());
     this.ui.renderRealms(m);
     this.ui.addEvents(m.events || []);
     // cinematic narrator reads the chronicle in God mode
     if (performance.now() - this.bootAt > 6000 && !this.cinema.active) {
-      for (const e of m.events || []) if (!e.minor) this.audio.say(e.text, { kind: 'narrator' });
+      for (const e of m.events || []) {
+        if (e.minor) continue;
+        if (e.narrOnly) { this.audio.say(e.narr, { kind: 'narrator' }); continue; }
+        const spoken = e.type === 'letter' ? `A raven from ${e.fromName}. ${e.quote}` : e.text.replace(/^✉\s*/, '');
+        this.audio.say(e.narr ? `${spoken} ... ${e.narr}` : spoken, { kind: 'narrator' });
+      }
+      for (const e of m.events || []) this.music?.onEvent(e);
     }
     for (const s of m.strikes || []) this.audio.thunder(Math.hypot(s[0] - this.controls.target.x, s[1] - this.controls.target.z));
     // conversations: schedule each line in local time
@@ -324,17 +335,22 @@ class App {
     const wind = this.state?.wind || { x: 1, z: 0, s: 3 };
     this.veg.update(cam, this.time, wind, wind.s, yf);
     this.water.update(dt, this.sky.sunDir, this.sky.sunColor, here.flood);
-    this.people.update(now, this.time, cam, focus);
+    this.people.update(now, this.time, cam, focus, this.chars.hidden);
+    this.chars.update(dt, now, this.time, cam, focus);
+    this.cutT = (this.cutT || 0) - dt;
+    if (this.cutT <= 0) { this.cutT = 0.3; this.buildings.updateCutaway(cam); }
     this.buildings.update(this.time, 1 - this.sky.daylight);
     this.weather.update(dt, this.time, cam, focus, wind, this.sky.daylight, this.sky.sunColor, this.scene.fog, this.state?.kingdoms);
     $('flash').style.opacity = this.weather.flash.toFixed(3);
+    this.audioKeep = (this.audioKeep || 0) - dt;
+    if (this.audioKeep <= 0) { this.audioKeep = 5; this.audio.keepAlive(); this.music.tick(); }
     this.audioT = (this.audioT || 0) - dt;
     if (this.audio.on && this.audioT <= 0) { this.audioT = 0.25; this.audio.update(0.25, this.soundEnv(focus, camH, here, wind)); }
 
     this.labelT -= dt;
     if (this.labelT <= 0) { this.labelT = 0.05; this.updateLabels(camH); }
     this.mmT -= dt;
-    if (this.mmT <= 0) { this.mmT = 0.25; this.ui.drawMinimap(this.state, cam, focus, this.time); this.ui.updateTop(this.state, hours); }
+    if (this.mmT <= 0) { this.mmT = 0.25; this.ui.drawMinimap(this.state, cam, focus, this.time); this.ui.updateTop(this.state, hours, this.skyHours()); }
     this.inspT -= dt;
     if (this.inspT <= 0 && this.ui.inspect) { this.inspT = 1; this.send({ t: 'inspect', kind: this.ui.inspect.kind, id: this.ui.inspect.id }); }
 
@@ -377,17 +393,21 @@ class App {
       const a = this.people.agents.get(line.s);
       if (!a) continue;
       const near = Math.hypot(a.x - focus.x, a.z - focus.z) < 140 && camH < 260;
-      const inMovie = movieTalk && movieTalk.id === t.id;
+      const camD = Math.hypot(a.x - this.camera.position.x, a.z - this.camera.position.z);
+      const inMovie = this.cinema.active && t.k === this.cinema.kid && (movieTalk?.id === t.id || camD < 90);
       if (!t.voiced.has(li)) {
-        t.voiced.add(li);
-        a.mouthUntil = t.start + (li + 1) * t.lineMs - 300; a.voiced = false;
-        if ((inMovie || (!this.cinema.active && near)) && this.audio.on) {
-          this.audio.say(line.text, {
-            kind: 'talk', seed: line.s, female: line.f, child: line.c === 1, elder: line.c === 2, volume: inMovie ? 1 : 0.8,
-            onstart: () => { a.voiced = true; a.mouthUntil = performance.now() + 30000; },
-            onboundary: () => { a.mouthPulse = 1; },
-            onend: () => { a.voiced = false; a.mouthUntil = 0; a.mouthPulse = 0; },
-          });
+        const audible = this.audio.on && (inMovie || (!this.cinema.active && near));
+        a.mouthUntil = t.start + (li + 1) * t.lineMs - 300;
+        if (audible || now > t.start + (li + 1) * t.lineMs - 1200) {
+          t.voiced.add(li); a.voiced = false;
+          if (audible) {
+            this.audio.say(line.text, {
+              kind: 'talk', seed: line.s, female: line.f, child: line.c === 1, elder: line.c === 2, volume: inMovie ? 1 : 0.85,
+              onstart: () => { a.voiced = true; a.mouthUntil = performance.now() + 30000; },
+              onboundary: () => { a.mouthPulse = 1; },
+              onend: () => { a.voiced = false; a.mouthUntil = 0; a.mouthPulse = 0; },
+            });
+          }
         }
       }
       if (inMovie) sub = `<b>${line.n}:</b> ${line.text}`;

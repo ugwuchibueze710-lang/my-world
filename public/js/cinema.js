@@ -71,10 +71,13 @@ export class Cinema {
     const movers = adults.filter((a) => a.mv && a.st !== STATE.REST);
     const fighters = mem.filter((a) => a.st === STATE.FIGHT);
     const talk = this.activeTalk();
+    const sleepers = mem.filter((a) => (a.ex & 64) && a.st === STATE.REST && ((a.fl >> 3) & 7) !== 2 && ((a.fl >> 3) & 7) !== 3 && this.app.buildings.houseAt(a.x, a.z));
+    const hr = this.app.skyHours() % 24, night = hr < 5.5 || hr >= 20.5;
     const storm = (this.app.state?.storms || []).find((s) => s.type !== 'rain' && s.type !== 'snow' && Math.hypot(s.x - k.x, s.z - k.z) < s.r + 1500);
     const last = this.history[this.history.length - 1];
     const options = [];
     if (talk) options.push(['talk', 6]);
+    if (sleepers.length) options.push(['indoors', night ? 5 : 1]);
     if (fighters.length) options.push(['battle', 5]);
     if (ruler) options.push(['walk', ruler.mv ? 3 : 1.5], ['closeup', 1.5]);
     if (movers.length) options.push(['walk', 2], ['track', 2]);
@@ -99,8 +102,9 @@ export class Cinema {
       case 'closeup': shot.subject = ruler && Math.random() < 0.55 ? ruler : pickSubject(adults); shot.dur = 5; break;
       case 'storm': shot.storm = storm; break;
       case 'army': shot.dur = 7; break;
+      case 'indoors': shot.subject = sleepers[Math.floor(Math.random() * sleepers.length)]; shot.dur = 8; break;
     }
-    if (['walk', 'track', 'closeup', 'battle'].includes(type) && !shot.subject) { shot.type = 'establish'; }
+    if (['walk', 'track', 'closeup', 'battle', 'indoors'].includes(type) && !shot.subject) { shot.type = 'establish'; }
     this.shot = shot; this.history.push(shot.type); if (this.history.length > 6) this.history.shift();
     this.cutPending = cut;
     // caption
@@ -115,10 +119,11 @@ export class Cinema {
     else if (shot.type === 'storm') cap = `A ${shot.storm.type} looms over ${k.name}`;
     else if (shot.type === 'army') cap = `The army of ${k.name}${k.army?.s === 'siege' ? ' lays siege' : ' on the march'}`;
     else if (shot.type === 'talk') cap = '';
+    if (shot.type === 'indoors') { cap = `Night in ${k.name}. Inside a small cottage, a family sleeps by the dying fire.`; }
     $('mv-cap').innerHTML = cap ? `<b>${cap}</b>` : '';
   }
 
-  head(a) { const s = ((a.fl >> 1) & 3) === 1 ? 0.75 : 1; return V(a.x, a.y + 1.68 * s, a.z); }
+  head(a) { const h = this.app.chars?.headOf(a.id); if (h) return h; const s = ((a.fl >> 1) & 3) === 1 ? 0.75 : 1; return V(a.x, a.y + 1.68 * s, a.z); }
 
   update(dt) {
     if (!this.active) return;
@@ -167,6 +172,17 @@ export class Cinema {
         const ar = k.army; if (!ar) { this.nextShot(); return; }
         const gy = ground(ar.x, ar.z), a = sh.seed * 6.28 + sh.t * 0.06;
         cam = V(ar.x + Math.cos(a) * 45, gy + 8, ar.z + Math.sin(a) * 45); look = V(ar.x, gy + 2, ar.z); break;
+      }
+      case 'indoors': {
+        const h = this.app.buildings.houseAt(subj.x, subj.z);
+        if (!h || !(subj.ex & 64)) { this.nextShot(); return; }
+        const [hx, hz, , th, sx, sz] = h, gy = ground(hx, hz);
+        const X = V(Math.cos(th), 0, -Math.sin(th)), Z = V(Math.sin(th), 0, Math.cos(th));
+        const drift = Math.sin(sh.t * 0.15) * 0.3;
+        cam = V(hx, gy + 2.5, hz).add(X.clone().multiplyScalar((2.3 + drift) * sx)).add(Z.clone().multiplyScalar(1.8 * sz));
+        look = V(subj.x, subj.y + 0.45, subj.z).add(X.multiplyScalar(-0.5));
+        smooth = 0.05;
+        break;
       }
       case 'talk': {
         const t = sh.talk, now = performance.now();

@@ -214,7 +214,7 @@ export class People {
     this.list = [...this.agents.values()];
   }
 
-  update(now, time, camera, focus) {
+  update(now, time, camera, focus, hidden) {
     this.uniforms.uTime.value = time;
     const cp = camera.position;
     const camH = cp.y - focus.y;
@@ -253,6 +253,7 @@ export class People {
         }
       }
       if (!near) continue;
+      if (hidden && hidden.has(a.id)) continue; // drawn as a full rigged character instead
       const female = a.fl & 1, ag = (a.fl >> 1) & 3, role = (a.fl >> 3) & 7;
       const mesh = female ? this.female : this.male;
       const idx = female ? nf : nm;
@@ -271,7 +272,9 @@ export class People {
       if (sick && !moving) lying = true;
       P.set(nx, a.y, nz);
       if (ag === 0) { P.x += Math.cos(a.hd) * 0.22; P.y += 0.75; }
-      if (lying) { E.set(-Math.PI / 2, a.hd, 0, 'YXZ'); Q.setFromEuler(E); P.y += 0.15; }
+      const inBed = (a.ex & 64) && st === STATE.REST;
+      if (inBed) { P.x += Math.cos(a.sh) * 0.85 * s; P.z -= Math.sin(a.sh) * 0.85 * s; P.y += 0.5; E.set(-Math.PI / 2, a.sh + Math.PI / 2, 0, 'YXZ'); Q.setFromEuler(E); }
+      else if (lying) { E.set(-Math.PI / 2, a.hd, 0, 'YXZ'); Q.setFromEuler(E); P.y += 0.15; }
       else Q.setFromAxisAngle(THREE.Object3D.DEFAULT_UP, a.hd);
       S.set(s, s, s);
       M.compose(P, Q, S);

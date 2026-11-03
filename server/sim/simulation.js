@@ -6,6 +6,8 @@ import { Culture } from './names.js';
 import { SpatialHash } from './spatial.js';
 import { Weather } from './weather.js';
 import { maybeTalk, moodOf } from './talk.js';
+import { ensurePersona, socialTick, plotTick, onDeath, inheritGrudges, opOf, addOp, remember } from './social.js';
+import { tensionTick, diplomacyTick, storyteller } from './diplomacy.js';
 
 const YEAR = HOURS_PER_YEAR;
 const N = GRID * GRID;
@@ -54,7 +56,8 @@ class Kingdom {
 }
 
 export class Simulation {
-  constructor({ seed = 20261103, hoursPerSecond = 1, maxPopulation = 4000, restore = null } = {}) {
+  constructor({ seed = 20261103, hoursPerSecond = 1, maxPopulation = 4000, restore = null, daySeconds = 360 } = {}) {
+    this.daySeconds = daySeconds; this.dayClock = 0.27; // days elapsed on the life clock (0.27 = 06:30 on day 1)
     this.seed = seed; this.hps = hoursPerSecond; this.maxPop = maxPopulation;
     this.rand = mulberry32((seed ^ Date.now()) >>> 0);
     const t0 = Date.now();
@@ -78,6 +81,7 @@ export class Simulation {
     this.landVersion = 0;
     this.capitalId = 0;
     this.talks = []; this.talkSeq = 0;
+    this.secrets = []; this.secretSeq = 0; this.plots = []; this.ravens = []; this.usurp = null;
     if (restore) restore(this); else this.genesis();
   }
 
@@ -153,6 +157,7 @@ export class Simulation {
     if (!p.genes) p.genes = this.randGenes(this.rand);
     if (!p.name) p.name = culture.person(p.sex);
     p.loyalty = 0.45 + p.genes.loyal * 0.5;
+    ensurePersona(p, this.rand);
     p.ageY = (this.time - p.birth) / YEAR;
     this.people.push(p); this.byId.set(p.id, p);
     const k = this.kingdoms.get(p.kingdom); if (k) k.members.add(p.id);
@@ -192,6 +197,7 @@ export class Simulation {
   // ---------------------------------------------------------------- main loop
   tick(dt) {
     this.realTime += dt;
+    this.dayClock += dt / this.daySeconds;
     this.time += dt * this.hps;
     this.weather.update(dt);
     this._sec += dt;
@@ -216,6 +222,10 @@ export class Simulation {
     this.diseaseSpread();
     if (this.seconds % 4 === 0) this.society();
     if (this.seconds % 2 === 0) maybeTalk(this);
+    if (this.seconds % 10 === 0) { tensionTick(this); diplomacyTick(this); }
+    if (this.seconds % 15 === 7) plotTick(this);
+    if (this.seconds % 60 === 30) socialTick(this);
+    if (this.seconds % 200 === 100) storyteller(this);
     this._biasT += 1;
     if (this._biasT >= 20) { this._biasT = 0; this.updateBias(); }
     this._landT += 1;
@@ -224,7 +234,19 @@ export class Simulation {
     if (pop > this.stats.peakPop) this.stats.peakPop = pop;
   }
 
-  isNight() { const h = this.time % 24; return h < 5.5 || h > 20.5; }
+  hour() { return (this.dayClock % 1) * 24; }
+  isNight() { const h = this.hour(); return h < 5.5 || h >= 21; }
+  secsPerHour() { return this.daySeconds / 24; }
+  // has a worker run out of daylight to get home before 21:00?
+  mustHeadHome(p, k) {
+    const h = this.hour();
+    if (h < 5.5 || h >= 21) return true;
+    if (h < 12) return false;
+    const left = (20.8 - h) * this.secsPerHour();
+    const [hx, hz] = this.homeOf(p, k);
+    return Math.hypot(hx - p.x, hz - p.z) / 2.2 + 12 > left;
+  }
+  relTension(a, b) { return a && b ? (a.relOf(b.id).tension || 0) : 0; }
 
   // ---------------------------------------------------------------- land & food
   updateBias() {
@@ -329,9 +351,16 @@ export class Simulation {
         const h = this.byId.get(p.spouseId);
         if (h && h.alive && h.ageY < 70 && Math.abs(h.x - p.x) < 900 && Math.abs(h.z - p.z) < 900 && !h.soldier && p.health > 40) {
           const fpc = k ? k.food / Math.max(1, k.pop) : 0;
-          const rate = 0.03 * p.genes.fert * h.genes.fert * p.nourish * p.nourish * (fpc > 1.5 ? 1 : 0.35) * capF * (a > 38 ? 0.5 : 1);
-          if (r() < 1 - Math.exp(-rate * dDays)) {
-            p.pregnant = { due: this.time + (262 + r() * 18) * 24, father: h.id };
+          const inBed = p.task?.type === 'sleep' && p.task.phase === 1 && h.task?.type === 'sleep' && h.task.phase === 1 && Math.hypot(p.x - h.x, p.z - h.z) < 4;
+          const love = 0.75 + Math.max(0, opOf(p, h)) / 120;
+          const fert = Math.sqrt(p.genes.fert * h.genes.fert) * Math.min(1, p.nourish * 1.2) * (fpc > 1 ? 1 : 0.45) * capF * (a > 38 ? 0.55 : 1) * love;
+          // a night together: ~35% chance per night for a healthy, well-fed couple (per real second in bed)
+          const perSec = inBed ? 0.0034 * fert : 0.0002 * fert;
+          if (r() < perSec * dtReal) {
+            let father = h.id;
+            const lover = this.byId.get(p.affair);
+            if (lover && r() < 0.3) { father = lover.id; this.secrets.push({ id: ++this.secretSeq, type: 'bastard', a: p.id, b: lover.id, t: this.realTime }); }
+            p.pregnant = { due: this.time + (262 + r() * 18) * 24, father };
             p.thought = 'Expecting a child';
           }
         }
@@ -379,6 +408,7 @@ export class Simulation {
     if (k) { k.members.delete(p.id); k.deaths++; }
     if (p.spouseId) { const s = this.byId.get(p.spouseId); if (s) s.spouseId = 0; }
     this.fx.push({ kind: 'death', x: Math.round(p.x), z: Math.round(p.z) });
+    try { onDeath(this, p, this.byId.get(p.lastKiller) || null); } catch (e) { console.warn('onDeath', e.message); }
     if (k && (p.id === k.rulerId || p.role === ROLE.CONSORT || p.role === ROLE.GENERAL)) {
       this.event('royal_death', `${this.fullName(p)} of ${k.name} ${cause} at age ${Math.floor(p.ageY)}.`, { k: k.id, x: p.x, z: p.z });
       k.history.push(`Year ${calendar(this.time).year}: ${this.fullName(p)} ${cause}.`);
@@ -426,6 +456,7 @@ export class Simulation {
     let heir = null;
     const kids = dead.children.map(alive).filter(Boolean).sort((a, b) => b.ageY - a.ageY);
     heir = kids.find((c) => c.ageY >= 16) || null;
+    if (this.usurp && this.usurp.k === k.id) { const u = alive(this.usurp.by); this.usurp = null; if (u) { heir = u; u.house = k.culture.house(); k.dynasty = u.house; } }
     let consort = alive(dead.spouseId);
     if (!heir && consort && consort.ageY >= 16) heir = consort;
     if (!heir && kids.length) heir = kids[0];
@@ -443,6 +474,7 @@ export class Simulation {
     for (const id of k.members) { const q = this.byId.get(id); if (q && (q.role === ROLE.CONSORT || q.role === ROLE.ROYAL) && q !== heir) q.role = ROLE.COMMONER; }
     if (!heir) { k.rulerId = 0; return; }
     k.rulerId = heir.id; heir.role = ROLE.RULER; heir.soldier = false; k.monarchs++;
+    inheritGrudges(this, dead, heir);
     const sp = alive(heir.spouseId); if (sp) sp.role = ROLE.CONSORT;
     for (const cid of heir.children) { const c = alive(cid); if (c) c.role = ROLE.ROYAL; }
     this.event('coronation', `${this.fullName(heir)} is crowned ruler of ${k.name}${heir.ageY < 16 ? ` at only ${Math.floor(heir.ageY)} years old` : ''}.`, { k: k.id, pid: heir.id, x: k.x, z: k.z });
@@ -548,6 +580,23 @@ export class Simulation {
     return [h[0] + ((p.id * 5) % 7) - 3, h[1] + ((p.id * 11) % 7) - 3];
   }
 
+  // where someone sleeps: a real bed inside their family's house (rulers sleep in the keep)
+  bedOf(p, k) {
+    if (p.id === k.rulerId || p.role === ROLE.CONSORT) return [...k.local(p.sex === 'F' ? 0.6 : -0.6, 0), 0];
+    if (!k.houses.length) return [...this.homeOf(p, k), 0];
+    let key = p.spouseId ? Math.min(p.id, p.spouseId) : p.id, child = false;
+    if (p.ageY < 16 && !p.spouseId) { const m = this.byId.get(p.motherId) || this.byId.get(p.fatherId); if (m && m.kingdom === p.kingdom) { key = m.spouseId ? Math.min(m.id, m.spouseId) : m.id; child = true; } }
+    const h = k.houses[key % k.houses.length];
+    const hash = Math.abs(Math.sin(h[0] * 12.9898 + h[1] * 78.233) * 43758.5453) % 1;
+    const sx = 0.85 + hash * 0.45, sz = 0.85 + ((hash * 7) % 1) * 0.4;
+    let lx, lz;
+    if (child) { const slot = p.id % 3; lx = 1.75; lz = -1.3 + slot * 1.1; }
+    else { lx = -1.55; lz = -0.55 + (p.sex === 'F' ? 0.38 : -0.38); }
+    const th = (h[2] || 0) + Math.PI / 2, c = Math.cos(th), sn = Math.sin(th);
+    lx *= sx; lz *= sz;
+    return [h[0] + lx * c + lz * sn, h[1] - lx * sn + lz * c, th];
+  }
+
   updatePerson(p, dt) {
     let k = this.kingdoms.get(p.kingdom);
     if (!k) { // stranded: join the nearest kingdom
@@ -559,8 +608,9 @@ export class Simulation {
     const e = this.weather.effectOn(p, dt, this._wfx);
     const child = p.ageY < 14;
     // ---- needs (real-time)
-    p.satiety -= dt / (child ? 330 : 270);
-    p.hydration -= (dt / 300) * e.thirst;
+    const asleep = p.task?.type === 'sleep' && p.task.phase === 1;
+    p.satiety -= dt / (child ? 330 : 270) * (asleep ? 0.45 : 1);
+    p.hydration -= (dt / 300) * e.thirst * (asleep ? 0.45 : 1);
     if (p.state === STATE.REST) p.energy = Math.min(1, p.energy + dt / 40);
     else p.energy -= dt / (p.state === STATE.FIGHT || p.state === STATE.MARCH ? 260 : 480);
     if (p.energy < 0) p.energy = 0;
@@ -645,7 +695,14 @@ export class Simulation {
     p.thinkT = 2.5 + r() * 3;
     const critical = p.satiety < 0.2 || p.hydration < 0.2;
     const tt = p.task?.type;
-    if (tt === 'fight' || (tt === 'flee' && p.task.t < 8)) return;
+    if (tt === 'fight' || tt === 'brawl' || tt === 'vendetta' || (tt === 'flee' && p.task.t < 8)) return;
+    // daily rhythm: home by dusk, asleep in bed at night (soldiers on campaign excepted)
+    const onDuty = (p.soldier && k.army.state !== 'none') || tt === 'defend' || tt === 'migrate' || k.defense;
+    if (!onDuty) {
+      if (tt === 'sleep' && !(p.satiety < 0.12 || p.hydration < 0.12)) return;
+      const bedtime = this.isNight() || (this.mustHeadHome(p, k) && p.carry < 0.5 && p.carryMin < 0.5 && tt !== 'farm' && tt !== 'mine');
+      if (bedtime && !critical && tt !== 'eat' && tt !== 'drink') { this.startTask(p, k, 'sleep'); return; }
+    }
     if (tt === 'drink' || (tt === 'eat' && p.hydration > 0.2)) return;
     if (tt === 'talk' && !critical && p.task.until > this.realTime && e.danger < 0.4) return;
     // people finish what they start, unless survival demands otherwise
@@ -653,6 +710,7 @@ export class Simulation {
     if (!critical && tt === 'rest' && p.energy < 0.9) return;
     if (tt === 'migrate' && p.satiety > 0.12 && p.hydration > 0.25) return;
     const night = this.isNight();
+    const late = this.hour() > 16.5 || this.hour() < 6.3; // no new field work late in the day
     let best = 'wander', bs = -1e9;
     const opt = (name, s) => { s += (r() - 0.5) * 0.45; if (s > bs) { bs = s; best = name; } };
     const fpc = k.food / Math.max(1, k.pop);
@@ -662,14 +720,14 @@ export class Simulation {
     opt('rest', (1 - p.energy) * 2.4 + (night ? 0.7 : 0) + (p.sick > 0 ? 1.5 : 0) + (age > 70 ? 0.4 : 0) - 0.4);
     if (age < 14) {
       opt('play', 1.0);
-      if (age >= 10) opt('farm', 0.45 + g.dilig * 0.4 - (night ? 0.5 : 0));
+      if (age >= 10 && !late) opt('farm', 0.45 + g.dilig * 0.4);
     } else {
       const campaign = k.army.state !== 'none';
       if (p.soldier && campaign) opt('march', 1.7 + g.loyal * 1.2 + (k.army.state === 'defend' ? 1 : 0));
       if (k.defense && age < 62 && !p.pregnant) opt('defend', 0.9 + g.courage + p.loyalty - (p.sex === 'F' ? 0.6 : 0) - (p.role === ROLE.RULER ? 0.6 : 0));
-      opt('farm', (0.95 + (fpc < 6 ? 0.7 : 0) + (fpc < 2 ? 0.8 : 0)) * (0.5 + g.dilig) * (night ? 0.3 : 1) - (age > 65 ? 0.7 : 0) - (p.pregnant ? 0.3 : 0));
-      opt('mine', (0.3 + k.mineralNeed) * (0.5 + g.dilig) * (p.sex === 'M' ? 1 : 0.55) * (night ? 0.3 : 1) - (age > 55 ? 0.6 : 0));
-      if (k.needsHouse && age < 60) opt('build', 0.8 * (0.4 + g.dilig) * (night ? 0.3 : 1));
+      opt('farm', (0.95 + (fpc < 6 ? 0.7 : 0) + (fpc < 2 ? 0.8 : 0)) * (0.5 + g.dilig) * (late ? 0 : 1) - (age > 65 ? 0.7 : 0) - (p.pregnant ? 0.3 : 0) - (late ? 9 : 0));
+      opt('mine', (0.3 + k.mineralNeed) * (0.5 + g.dilig) * (p.sex === 'M' ? 1 : 0.55) * (late ? 0 : 1) - (age > 55 ? 0.6 : 0) - (late ? 9 : 0));
+      if (k.needsHouse && age < 60 && !late) opt('build', 0.8 * (0.4 + g.dilig));
       if (!p.spouseId && age >= 16 && age < 50) opt('court', (0.35 + g.social * 0.8) * (night ? 0.6 : 1));
       if (fpc < 0.6 && p.loyalty < 0.42 && age >= 16 && p.role !== ROLE.RULER) opt('defect', (0.6 - p.loyalty) * 2.5 * (1 - fpc));
     }
@@ -735,6 +793,7 @@ export class Simulation {
         p.thought = 'Heading out to dig for ore';
         break;
       }
+      case 'sleep': { const [bx, bz, br] = this.bedOf(p, k); t.tx = bx; t.tz = bz; t.rot = br; p.wake = 5.6 + this.rand() * 1.2; p.thought = this.isNight() ? 'Going home to bed' : 'The day is done — heading home before dark'; break; }
       case 'rest': { const [hx, hz] = this.homeOf(p, k); t.tx = hx; t.tz = hz; p.thought = p.sick > 0 ? 'Sick - resting at home' : 'Tired - going home to rest'; break; }
       case 'play': { const a = r() * 6.283, d = 10 + r() * 45; t.tx = k.x + Math.cos(a) * d; t.tz = k.z + Math.sin(a) * d; p.thought = 'Playing near home'; break; }
       case 'build': {
@@ -913,15 +972,17 @@ export class Simulation {
         }
         break;
       case 'farm':
+        if (t.phase === 0 && this.mustHeadHome(p, k)) { t.phase = 2; t.tx = k.x + (r() - 0.5) * 20; t.tz = k.z + (r() - 0.5) * 20; p.thought = 'Dusk is coming — heading home'; }
         if (t.phase === 0) { if (go(walk, STATE.WALK)) { t.phase = 1; t.t = 0; } }
         else if (t.phase === 1) {
           p.state = STATE.FARM;
-          const take = Math.min(this.food[t.cell], dt * (0.9 + 0.5 * p.genes.dilig) * (p.ageY < 14 ? 0.5 : 1));
+          const take = Math.min(this.food[t.cell], dt * (1.5 + 0.8 * p.genes.dilig) * (p.ageY < 14 ? 0.5 : 1));
           this.food[t.cell] -= take; p.carry += take; this.cult[t.cell] = Math.min(1, this.cult[t.cell] + dt * 0.003);
-          if (p.carry >= 10 || this.food[t.cell] < 0.3 || t.t > 18) { t.phase = 2; t.tx = k.x + (r() - 0.5) * 20; t.tz = k.z + (r() - 0.5) * 20; p.thought = 'Carrying the harvest home'; }
+          if (p.carry >= 14 || this.food[t.cell] < 0.3 || t.t > 18 || this.mustHeadHome(p, k)) { t.phase = 2; t.tx = k.x + (r() - 0.5) * 20; t.tz = k.z + (r() - 0.5) * 20; p.thought = 'Carrying the harvest home'; }
         } else if (go(walk * 0.9, STATE.WALK)) { k.food += p.carry; k.prod = (k.prod || 0) + p.carry; p.carry = 0; p.task = null; }
         break;
       case 'mine':
+        if (t.phase < 2 && this.mustHeadHome(p, k)) { t.phase = 2; t.tx = k.x + (r() - 0.5) * 20; t.tz = k.z + (r() - 0.5) * 20; p.thought = 'Dusk is coming — hauling the ore home'; }
         if (t.phase === 0) { if (go(walk, STATE.WALK)) { t.phase = 1; t.t = 0; } }
         else if (t.phase === 1) {
           p.state = STATE.MINE;
@@ -998,7 +1059,7 @@ export class Simulation {
             const sp = this.strength(p), sq = this.strength(q);
             if (r() < 0.5 + 0.3 * (sp - sq)) {
               q.health -= (8 + r() * 14) * sp / (0.6 + 0.4 * sq);
-              q.lastCause = `was slain in battle by ${this.fullName(p)} of ${k.name}`;
+              q.lastCause = `was slain in battle by ${this.fullName(p)} of ${k.name}`; q.lastKiller = p.id;
               if (q.task?.type !== 'fight' && q.health > 20 && this.isCombatant(q)) q.task = { type: 'fight', target: p.id, t: 0 };
               if (q.health <= 0) {
                 p.kills++; k.kills++;
@@ -1007,6 +1068,46 @@ export class Simulation {
                 this.die(q, q.lastCause); p.task = null; p.thinkT = 0;
               }
             }
+          }
+        }
+        break;
+      }
+      case 'sleep':
+        if (t.phase === 0) { if (go(walk * (this.isNight() ? 1.15 : 1), STATE.WALK) || t.t > 200) { t.phase = 1; p.x = t.tx; p.z = t.tz; p.heading = t.rot || 0; } }
+        else {
+          p.state = STATE.REST; p.indoors = true;
+          if (p.hydration < 0.6 && k.hasWell) p.hydration = 0.9; // a jug by the bed
+          const h = this.hour();
+          if (!this.isNight() && h >= (p.wake || 6) && h < 20) { p.task = null; p.indoors = false; p.thought = 'Good morning — another day begins'; p.energy = 1; }
+        }
+        break;
+      case 'brawl': case 'vendetta': {
+        const q = this.byId.get(t.target);
+        const lethal = t.type === 'vendetta';
+        if (!q || !q.alive || (!lethal && this.realTime > t.until) || t.t > 120) { p.task = null; p.thinkT = 0; break; }
+        const d = Math.hypot(q.x - p.x, q.z - p.z);
+        p.state = d > 1.6 ? STATE.WALK : STATE.FIGHT;
+        if (d > 1.5) { this.moveTo(p, q.x, q.z, lethal ? run : walk * 1.2, dt); break; }
+        p.heading = Math.atan2(q.x - p.x, q.z - p.z);
+        p.attackCd -= dt;
+        if (p.attackCd <= 0) {
+          p.attackCd = 1 + r() * 0.8;
+          if (r() < 0.55) {
+            q.health -= lethal ? 10 + r() * 14 * this.strength(p) : 3 + r() * 5;
+            if (!lethal && q.health < 30) { q.health = 30; p.task = null; q.task = null; addOp(p, q, r() < 0.5 ? 15 : -20); addOp(q, p, r() < 0.5 ? 15 : -20); break; }
+            if (q.health <= 0) {
+              q.lastKiller = p.id;
+              const kk = this.kingdoms.get(p.kingdom);
+              this.die(q, `was murdered by ${p.name}`);
+              this.event('murder', `${this.fullName(p)} has murdered ${q.name} in ${kk ? kk.name : 'the wilds'}.`, { k: p.kingdom, x: p.x, z: p.z, pid: p.id, narr: `A life taken in passion. Will ${kk ? 'the crown of ' + kk.name : 'anyone'} see justice done?` });
+              remember(this, p, `Killed ${q.name}`, 4);
+              const ruler = kk && this.byId.get(kk.rulerId);
+              if (ruler && ruler !== p && r() < 0.35 + ruler.genes.honor * 0.4) {
+                this.event('justice', `${this.fullName(ruler)} sentences ${p.name} to death for the murder of ${q.name}.`, { k: kk.id, x: kk.x, z: kk.z });
+                this.die(p, `was executed for murder by ${this.fullName(ruler)}`);
+              }
+              p.task = null;
+            } else if (q.task?.type !== 'brawl' && q.task?.type !== 'vendetta' && q.ageY >= 16) q.task = { type: lethal ? 'vendetta' : 'brawl', target: p.id, t: 0, until: t.until };
           }
         }
         break;
@@ -1116,9 +1217,10 @@ export class Simulation {
       const allyPower = others.filter((x) => o.rel.get(x.id)?.state === 'ally').reduce((s, x) => s + x.power, 0);
       const myAllies = others.filter((x) => k.rel.get(x.id)?.state === 'ally' && !this.atWar(x.id, o.id)).reduce((s, x) => s + x.power * 0.6, 0);
       const ratio = (k.power + myAllies) / (o.power + allyPower * 0.6 + 0.1);
-      const desire = g.aggr * 0.9 + g.ambit * 0.5 + envy + hunger + capHate + grudge - 0.95 - d / 9000 + (r() - 0.5) * 0.4;
+      const tension = rel.tension || 0;
+      const desire = g.aggr * 0.9 + g.ambit * 0.5 + envy + hunger + capHate + grudge + tension / 70 + (rel.cb ? 0.35 : 0) - 1.35 - d / 9000 + (r() - 0.5) * 0.4;
       const need = 1.2 - g.aggr * 0.35 - hunger * 0.3 - capHate * 0.25;
-      if (desire > 0 && ratio > need && r() < 0.12) { this.declareWar(k, o, capHate > 0 ? 'to topple the capital' : hunger ? 'for its granaries' : envy > 0.2 ? 'for its rich lands' : 'for glory'); break; }
+      if (desire > 0 && ratio > need && (tension > 45 || capHate > 0) && r() < 0.12) { this.declareWar(k, o, rel.cb ? `over ${rel.cb}` : capHate > 0 ? 'to topple the capital' : hunger ? 'for its granaries' : envy > 0.2 ? 'for its rich lands' : 'for glory'); break; }
     }
 
     // ----- coalition against the capital
@@ -1163,7 +1265,8 @@ export class Simulation {
     rel.ourDead = rel.theirDead = back.ourDead = back.theirDead = 0;
     this.stats.wars++;
     const kr = this.byId.get(k.rulerId);
-    this.event('war', `${kr ? this.fullName(kr) + ' of ' : ''}${k.name} declares war on ${o.name} ${why}!`, { k: k.id, k2: o.id, x: (k.x + o.x) / 2, z: (k.z + o.z) / 2 });
+    this.event('war', `${kr ? this.fullName(kr) + ' of ' : ''}${k.name} declares war on ${o.name} ${why}!`, { k: k.id, k2: o.id, x: (k.x + o.x) / 2, z: (k.z + o.z) / 2, narr: `It has come to this. Fields will burn, and mothers in ${k.name} and ${o.name} will bury their sons. Who will be left standing?` });
+    rel.tension = back.tension = 95; rel.cb = back.cb = null;
     k.history.push(`Year ${calendar(this.time).year}: declared war on ${o.name}.`);
     o.history.push(`Year ${calendar(this.time).year}: ${k.name} declared war on us.`);
     this.muster(k, o);
@@ -1286,7 +1389,7 @@ export class Simulation {
 
   makePeace(k, o, winner) {
     const r1 = k.relOf(o.id), r2 = o.relOf(k.id);
-    r1.state = r2.state = 'peace';
+    r1.state = r2.state = 'peace'; r1.tension = r2.tension = 45;
     r1.truceUntil = r2.truceUntil = this.realTime + 360 + this.rand() * 300;
     r1.grudge = Math.min(1, r1.grudge + 0.25); r2.grudge = Math.min(1, r2.grudge + 0.15);
     const loser = winner === o ? k : winner === k ? o : null;
@@ -1428,7 +1531,7 @@ export class Simulation {
       buf.writeUInt8((p.sex === 'F' ? 1 : 0) | (ag << 1) | (role << 3) | (p.pregnant ? 64 : 0) | (p.carry > 0.5 || p.carryMin > 0.5 ? 128 : 0), o + 11);
       buf.writeUInt8(Math.max(0, Math.min(255, Math.round(p.health * 2.55))), o + 12);
       buf.writeUInt8(Math.round(((p.heading % 6.2832 + 6.2832) % 6.2832) / 6.2832 * 255), o + 13);
-      buf.writeUInt8((p.sick > 0 ? 1 : 0) | (p.carryMin > 0.5 ? 2 : 0) | (moodOf(this, p) << 2) | (p.task?.type === 'talk' ? 32 : 0), o + 14);
+      buf.writeUInt8((p.sick > 0 ? 1 : 0) | (p.carryMin > 0.5 ? 2 : 0) | (moodOf(this, p) << 2) | (p.task?.type === 'talk' ? 32 : 0) | (p.task?.type === 'sleep' && p.task.phase === 1 ? 64 : 0), o + 14);
       buf.writeUInt8(Math.min(255, Math.floor(p.ageY * 2)), o + 15);
       o += AGENT_BYTES;
     }
@@ -1461,12 +1564,13 @@ export class Simulation {
         tier: k.tier, rot: k.rot, capital: k.capital, ruler: ruler ? { id: ruler.id, name: this.fullName(ruler) } : null, dynasty: k.dynasty,
         war: rel.war, ally: rel.ally, hv: k.housesVer, houses: k.houses, well: k.hasWell, coalition: k.coalition,
         army: k.army.state === 'none' ? null : { s: k.army.state, x: Math.round(k.army.fx), z: Math.round(k.army.fz), t: k.army.target },
+        tension: [...k.rel.entries()].filter(([id, r]) => this.kingdoms.has(id) && (r.tension || 0) > 25).map(([id, r]) => [id, Math.round(r.tension)]),
         siege: Math.round(k.siege || 0), wins: k.wins, losses: k.losses, parent: k.parentId, defense: k.defense,
       });
     }
     const ev = this.events.filter((e) => e.id > sinceEvent);
     return {
-      t: 'state', time: this.time, rt: this.realTime, hps: this.hps, cal, capital: this.capitalId,
+      t: 'state', time: this.time, rt: this.realTime, hps: this.hps, cal, capital: this.capitalId, day: this.dayClock, dayS: this.daySeconds,
       pop: this.people.length, stats: this.stats, kingdoms: ks, storms: this.weather.serialize(),
       strikes: this.weather.strikes.slice(), wind: { x: +this.weather.wind.x.toFixed(2), z: +this.weather.wind.z.toFixed(2), s: +this.weather.wind.base.toFixed(1) },
       events: ev, fx: this.fx.splice(0), ruins: this.ruins, talks: this.talks.filter((c) => this.realTime - c.t < 25),
@@ -1487,6 +1591,11 @@ export class Simulation {
       pregnant: !!p.pregnant, spouse: nm(p.spouseId), father: nm(p.fatherId), mother: nm(p.motherId),
       children: p.children.map(nm).filter(Boolean), childrenTotal: p.children.length, carrying: +p.carry.toFixed(1),
       x: Math.round(p.x), z: Math.round(p.z),
+      memories: (p.mem || []).slice(-6).reverse().map((m) => `Year ${m.y}: ${m.text}`),
+      relations: Object.entries(p.ops || {}).map(([id, v]) => [this.byId.get(+id), v]).filter(([q, v]) => q && Math.abs(v) >= 15)
+        .sort((a, b) => Math.abs(b[1]) - Math.abs(a[1])).slice(0, 6).map(([q, v]) => ({ id: q.id, name: this.fullName(q), v: Math.round(v), label: q.id === p.spouseId ? (v < -20 ? 'Spouse (bitter)' : 'Spouse') : q.id === p.affair ? 'Secret lover' : q.id === p.lover ? 'Lover' : v >= 40 ? 'Close friend' : v >= 15 ? 'Friend' : v <= -40 ? 'Hated rival' : 'Rival' })),
+      secret: p.affair ? `Having a secret affair with ${this.byId.get(p.affair)?.name || 'someone'}` : this.plots.some((x) => x.owner === p.id) ? 'Plotting against the crown' : this.plots.some((x) => x.agents.includes(p.id)) ? 'Part of a conspiracy against the crown' : null,
+      wakeHour: p.wake,
     };
   }
 
@@ -1511,6 +1620,7 @@ export class Simulation {
       conquests: k.conquests, monarchs: k.monarchs, kills: k.kills, deaths: k.deaths, history: k.history.slice(-14),
       champion: champion && champion.kills > 0 ? { id: champion.id, name: this.fullName(champion), kills: champion.kills } : null,
       well: k.hasWell, x: Math.round(k.x), z: Math.round(k.z),
+      tensions: [...k.rel.entries()].filter(([oid]) => this.kingdoms.has(oid)).map(([oid, r]) => ({ id: oid, name: this.kingdoms.get(oid).name, t: Math.round(r.tension || 0), cb: r.cb || null })).sort((a, b) => b.t - a.t),
     };
   }
 }

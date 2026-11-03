@@ -126,13 +126,15 @@ export class AudioSys {
     if (!vs.length) return null;
     const fem = vs.filter((v) => /female|zira|samantha|susan|hazel|libby|sonia|aria|jenny|karen|moira|tessa|fiona|victoria/i.test(v.name));
     const mal = vs.filter((v) => /male|david|mark|daniel|george|ryan|guy|alex|fred|oliver|thomas|arthur|james/i.test(v.name) && !/female/i.test(v.name));
-    const pool = (female ? fem : mal).length ? (female ? fem : mal) : vs;
+    let pool = (female ? fem : mal).length ? (female ? fem : mal) : vs;
+    const local = pool.filter((v) => v.localService); if (local.length) pool = local; // online voices start slowly
     return pool[seed % pool.length];
   }
   narratorVoice() {
     const vs = this.voices.length ? this.voices : speechSynthesis.getVoices();
     const pref = [/en-GB.*(george|ryan|arthur|thomas|daniel|male)/i, /(george|ryan|arthur|thomas|daniel)/i, /(david|guy|mark|james|alex)/i, /male/i];
-    for (const re of pref) { const v = vs.find((x) => re.test(x.name + ' ' + x.lang) && !/female/i.test(x.name)); if (v) return v; }
+    const loc = vs.filter((v) => v.localService);
+    for (const list of [loc, vs]) for (const re of pref) { const v = list.find((x) => re.test(x.name + ' ' + x.lang) && !/female/i.test(x.name)); if (v) return v; }
     return vs[0] || null;
   }
 
@@ -141,26 +143,51 @@ export class AudioSys {
     if (!this.on || !('speechSynthesis' in window)) return false;
     if (opts.kind === 'narrator' && !this.narratorOn) return false;
     if (opts.kind === 'talk' && !this.voicesOn) return false;
-    if (this.queue.length > (opts.kind === 'narrator' ? 3 : 2)) return false;
-    this.queue.push({ text, opts });
+    const item = { text, opts, at: performance.now() };
+    if (opts.kind === 'talk') {
+      // dialogue is time-critical: it jumps ahead of the narrator
+      if (this.queue.filter((q) => q.opts.kind === 'talk').length > 1) return false;
+      const i = this.queue.findIndex((q) => q.opts.kind !== 'talk');
+      if (i < 0) this.queue.push(item); else this.queue.splice(i, 0, item);
+    } else {
+      if (this.queue.length > 3) return false;
+      this.queue.push(item);
+    }
     this.pump();
     return true;
   }
   pump() {
     if (this.speaking || !this.queue.length) return;
-    const { text, opts } = this.queue.shift();
+    let item;
+    while ((item = this.queue.shift())) { // stale lines are worthless
+      const age = performance.now() - item.at;
+      if (item.opts.kind === 'talk' ? age < 2500 : age < 25000) break;
+    }
+    if (!item) return;
+    const { text, opts } = item;
     const u = new SpeechSynthesisUtterance(text);
-    if (opts.kind === 'narrator') { u.voice = this.narratorVoice(); u.rate = 0.86; u.pitch = 0.55; u.volume = 1; }
-    else { u.voice = this.voiceFor(opts.seed || 0, opts.female); u.rate = opts.child ? 1.12 : opts.elder ? 0.88 : 1.0; u.pitch = opts.child ? 1.7 : opts.female ? 1.2 : opts.elder ? 0.7 : 0.85; u.volume = opts.volume ?? 0.9; }
+    if (opts.kind === 'narrator') { u.voice = this.narratorVoice(); u.rate = 0.9; u.pitch = 0.6; u.volume = 1; }
+    else { u.voice = this.voiceFor(opts.seed || 0, opts.female); u.rate = opts.child ? 1.15 : opts.elder ? 0.92 : 1.05; u.pitch = opts.child ? 1.7 : opts.female ? 1.2 : opts.elder ? 0.7 : 0.85; u.volume = opts.volume ?? 0.9; }
+    let finished = false;
+    const done = () => {
+      if (finished) return; finished = true;
+      clearTimeout(guard);
+      if (this.speaking === u) this.speaking = null;
+      opts.onend?.();
+      setTimeout(() => this.pump(), opts.kind === 'narrator' ? 300 : 80);
+    };
     u.onstart = () => opts.onstart?.();
     u.onboundary = (e) => opts.onboundary?.(e);
-    const done = () => { if (this.speaking !== u) return; this.speaking = null; opts.onend?.(); setTimeout(() => this.pump(), opts.kind === 'narrator' ? 400 : 150); };
     u.onend = done; u.onerror = done;
     this.speaking = u;
-    if (speechSynthesis.paused) speechSynthesis.resume(); // Chrome can get stuck paused
+    // Chrome bug: the engine can wedge with a phantom utterance; clear it before speaking
+    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+    if (speechSynthesis.paused) speechSynthesis.resume();
     speechSynthesis.speak(u);
-    // safety: some browsers never fire onend
-    setTimeout(done, 1500 + text.length * 120);
+    // if Chrome never reports the end, unstick it ourselves
+    const guard = setTimeout(() => { speechSynthesis.cancel(); done(); }, 2500 + text.length * 85);
   }
+  // Chrome stops long sessions silently; keep the engine awake
+  keepAlive() { if (this.on && 'speechSynthesis' in window && !this.speaking && speechSynthesis.speaking) speechSynthesis.cancel(); }
   clearTalk() { this.queue = this.queue.filter((q) => q.opts.kind !== 'talk'); }
 }

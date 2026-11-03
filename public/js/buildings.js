@@ -58,6 +58,31 @@ export class Buildings {
     this.winMat = new THREE.MeshBasicMaterial({ color: 0xffb35c, transparent: true, opacity: 0.0, fog: true });
     this.houseWin = new THREE.InstancedMesh(winGeo, this.winMat, MAX_HOUSES);
     for (const m of [this.houseWalls, this.houseRoofs, this.houseChim, this.houseWin]) { m.count = 0; m.castShadow = m !== this.houseWin; m.receiveShadow = true; m.frustumCulled = false; this.group.add(m); }
+    // interiors (house-local coordinates match the simulation's bed positions)
+    const box = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y + h / 2, z);
+    const nonIdx = (gs) => mergeGeometries(gs.map((g) => g.toNonIndexed()));
+    const floorGeo = box(5.7, 0.06, 4.7, 0, 0.0, 0);
+    const bedFrame = nonIdx([box(2.1, 0.35, 1.6, -1.55, 0.05, -0.55), box(0.12, 0.9, 1.6, -2.62, 0.05, -0.55), // double bed + headboard
+      box(1.9, 0.3, 0.8, 1.75, 0.05, -1.3), box(1.9, 0.3, 0.8, 1.75, 0.05, -0.2), box(1.9, 0.3, 0.8, 1.75, 0.05, 0.9)]);
+    const blankets = nonIdx([box(1.5, 0.12, 1.5, -1.2, 0.4, -0.55), box(1.3, 0.1, 0.72, 2.0, 0.35, -1.3), box(1.3, 0.1, 0.72, 2.0, 0.35, -0.2), box(1.3, 0.1, 0.72, 2.0, 0.35, 0.9)]);
+    const pillows = nonIdx([box(0.4, 0.12, 0.55, -2.35, 0.4, -0.93), box(0.4, 0.12, 0.55, -2.35, 0.4, -0.17), box(0.32, 0.1, 0.5, 0.95, 0.35, -1.3), box(0.32, 0.1, 0.5, 0.95, 0.35, -0.2), box(0.32, 0.1, 0.5, 0.95, 0.35, 0.9)]);
+    const table = nonIdx([box(1.4, 0.08, 0.8, 0.0, 0.72, 1.55), box(0.08, 0.72, 0.08, -0.6, 0, 1.25), box(0.08, 0.72, 0.08, 0.6, 0, 1.25), box(0.08, 0.72, 0.08, -0.6, 0, 1.85), box(0.08, 0.72, 0.08, 0.6, 0, 1.85),
+      box(0.4, 0.45, 0.4, -0.9, 0, 1.55), box(0.4, 0.45, 0.4, 0.9, 0, 1.55)]);
+    const hearth = box(1.1, 1.2, 0.6, -2.4, 0, 1.7);
+    const fire = new THREE.ConeGeometry(0.28, 0.55, 8).translate(-2.4, 0.4, 1.75);
+    const mk = (g, mat, shadow = false) => { const m = new THREE.InstancedMesh(g, mat, MAX_HOUSES); m.count = 0; m.frustumCulled = false; m.receiveShadow = true; m.castShadow = shadow; this.group.add(m); return m; };
+    this.inFloor = mk(floorGeo, new THREE.MeshStandardMaterial({ color: 0x6b4c32, roughness: 0.9 }));
+    this.inBeds = mk(bedFrame, this.wood, true);
+    this.inBlankets = mk(blankets, new THREE.MeshStandardMaterial({ color: 0xa83a32, roughness: 1 }));
+    this.inPillows = mk(pillows, new THREE.MeshStandardMaterial({ color: 0xece4d2, roughness: 1 }));
+    this.inTable = mk(table, this.wood, true);
+    this.inHearth = mk(hearth, this.stone);
+    this.fireMat = new THREE.MeshBasicMaterial({ color: 0xff8a2a });
+    this.inFire = mk(fire, this.fireMat);
+    this.interiors = [this.inFloor, this.inBeds, this.inBlankets, this.inPillows, this.inTable, this.inHearth, this.inFire];
+    this.houseMats = [];
+    this.cut = new Set(); this.cutT = 0;
+    this.hearthLights = [0, 1].map(() => { const l = new THREE.PointLight(0xff9040, 0, 9, 1.6); this.group.add(l); return l; });
     this.houseVer = '';
     this.housePositions = [];
   }
@@ -179,11 +204,14 @@ export class Buildings {
           this.houseWalls.setMatrixAt(n, M); this.houseRoofs.setMatrixAt(n, M); this.houseChim.setMatrixAt(n, M); this.houseWin.setMatrixAt(n, M);
           C.setHSL(0.08 + hash * 0.05, 0.25 + hash * 0.2, 0.75 + hash * 0.15); this.houseWalls.setColorAt(n, C);
           C.setHSL(hash < 0.6 ? 0.02 + hash * 0.03 : 0.58, hash < 0.6 ? 0.45 : 0.08, 0.5 + hash * 0.2); this.houseRoofs.setColorAt(n, C);
-          this.housePositions.push([x, z, k.id]);
+          this.housePositions.push([x, z, k.id, (rot || 0) + Math.PI / 2, S.x, S.z]);
+          this.houseMats[n] = M.clone();
+          for (const im of this.interiors) im.setMatrixAt(n, M);
           n++;
         }
       }
-      for (const m of [this.houseWalls, this.houseRoofs, this.houseChim, this.houseWin]) {
+      this.cut.clear();
+      for (const m of [this.houseWalls, this.houseRoofs, this.houseChim, this.houseWin, ...this.interiors]) {
         m.count = n; m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true;
       }
     }
@@ -214,7 +242,40 @@ export class Buildings {
     }
   }
 
+  // lift the roofs off houses near the camera so you can see inside (doll-house view)
+  updateCutaway(camera) {
+    const cp = camera.position, want = new Set();
+    for (let i = 0; i < this.housePositions.length; i++) {
+      const [x, z] = this.housePositions[i];
+      const d = Math.hypot(x - cp.x, z - cp.z);
+      if (d < 24 && cp.y - this.world.heightAt(x, z) < 45) want.add(i);
+    }
+    const Z = new THREE.Matrix4().makeScale(0, 0, 0);
+    let changed = false;
+    for (const i of this.cut) if (!want.has(i)) { this.houseRoofs.setMatrixAt(i, this.houseMats[i]); this.houseChim.setMatrixAt(i, this.houseMats[i]); changed = true; }
+    for (const i of want) if (!this.cut.has(i)) { this.houseRoofs.setMatrixAt(i, Z); this.houseChim.setMatrixAt(i, Z); changed = true; }
+    this.cut = want;
+    if (changed) { this.houseRoofs.instanceMatrix.needsUpdate = true; this.houseChim.instanceMatrix.needsUpdate = true; }
+    // hearths light the rooms you are looking into
+    const lit = [...want].sort((a, b) => Math.hypot(this.housePositions[a][0] - cp.x, this.housePositions[a][1] - cp.z) - Math.hypot(this.housePositions[b][0] - cp.x, this.housePositions[b][1] - cp.z));
+    this.hearthLights.forEach((l, j) => {
+      const i = lit[j];
+      if (i === undefined) { l.userData.on = false; return; }
+      const p = new THREE.Vector3(-2.4, 1.0, 1.4).applyMatrix4(this.houseMats[i]);
+      l.position.copy(p); l.userData.on = true;
+    });
+  }
+  // the house (if any) that contains a point, with its frame — used by the movie director
+  houseAt(x, z) {
+    let best = null, bd = 6;
+    for (const h of this.housePositions) { const d = Math.hypot(h[0] - x, h[1] - z); if (d < bd) { bd = d; best = h; } }
+    return best;
+  }
+
   update(time, night) {
+    const flick = 0.75 + 0.25 * Math.sin(time * 9) * Math.sin(time * 5.3);
+    this.fireMat.color.setRGB(1, 0.45 + 0.15 * flick, 0.12);
+    this.hearthLights.forEach((l) => { l.intensity = l.userData.on ? (0.6 + night * 3.2) * flick : 0; });
     this.flagUniforms.uTime.value = time;
     this.winMat.opacity = night * 0.95;
     for (const c of this.castles.values()) c.flag.traverse((o) => { if (o.userData.spin) o.rotation.y = time * 0.6; });

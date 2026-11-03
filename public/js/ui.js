@@ -114,11 +114,14 @@ export class UI {
     ctx.strokeRect(m(focus.x) - (d / WORLD_SIZE) * S, m(focus.z) - (d / WORLD_SIZE) * S, (2 * d / WORLD_SIZE) * S, (2 * d / WORLD_SIZE) * S);
   }
 
-  updateTop(st, hours) {
-    const yearH = 8760, y = Math.floor(hours / yearH), yh = hours - y * yearH, day = Math.floor(yh / 24), season = Math.min(3, Math.floor(day / 91.25));
-    const hr = Math.floor(yh % 24), mn = Math.floor((yh * 60) % 60);
-    $('date').textContent = `Year ${y + 1} · ${SEASONS[season]} · Day ${day + 1}`;
-    $('hour').textContent = `${String(hr).padStart(2, '0')}:${String(mn).padStart(2, '0')}`;
+  updateTop(st, hours, dayHours) {
+    const yearH = 8760, y = Math.floor(hours / yearH), yh = hours - y * yearH, season = Math.min(3, Math.floor((yh / yearH) * 4));
+    const dh = dayHours ?? hours, hr = Math.floor(dh % 24), mn = Math.floor((dh * 60) % 60);
+    const daysPerYear = st ? Math.max(1, Math.round(yearH / (st.hps * (st.dayS || 360)))) : 24;
+    const day = Math.floor((yh / yearH) * daysPerYear) + 1;
+    const part = hr < 5 ? 'Night' : hr < 8 ? 'Dawn' : hr < 12 ? 'Morning' : hr < 17 ? 'Afternoon' : hr < 21 ? 'Evening' : 'Night';
+    $('date').textContent = `Year ${y + 1} · ${SEASONS[season]} · Day ${day}`;
+    $('hour').textContent = `${String(hr).padStart(2, '0')}:${String(mn).padStart(2, '0')} · ${part}`;
     if (!st) return;
     $('s-pop').textContent = st.pop.toLocaleString();
     $('s-king').textContent = st.kingdoms.length;
@@ -153,7 +156,9 @@ export class UI {
   }
   renderFeed() {
     const list = this.events.filter((e) => this.filter === 'all' || !e.minor).slice(-120).reverse();
-    $('feed').innerHTML = list.map((e) => `<div class="ev ${e.type} ${e.minor ? 'minor' : ''}" data-id="${e.id}"><span class="when">Y${e.year} ${e.season?.[0] || ''}${e.day}</span>${esc(e.text)}</div>`).join('');
+    $('feed').innerHTML = list.map((e) => e.narrOnly
+      ? `<div class="ev narration" data-id="${e.id}"><i>“${esc(e.narr)}”</i></div>`
+      : `<div class="ev ${e.type} ${e.minor ? 'minor' : ''}" data-id="${e.id}"><span class="when">Y${e.year} ${e.season?.[0] || ''}${e.day}</span>${esc(e.text)}${e.narr ? `<div class="narr">${esc(e.narr)}</div>` : ''}</div>`).join('');
   }
 
   closeInspector() { $('inspector').classList.add('hidden'); this.inspect = null; this.app.onInspectClosed(); }
@@ -185,6 +190,9 @@ export class UI {
       <div class="kv" style="margin-top:8px"><span>Strength</span><span>${d.strength.toFixed(2)}</span><span>Battle kills</span><span>${d.kills}</span></div>
       <div class="sec">Nature (free will)</div>
       <div class="kv">${trait('Ambition', g.ambit)}${trait('Aggression', g.aggr)}${trait('Courage', g.courage)}${trait('Loyalty', g.loyal)}${trait('Diligence', g.dilig)}${trait('Sociable', g.social)}</div>
+      ${d.secret ? `<div class="sec">Secret (only you can see this)</div><div class="thought" style="border-color:#c0392b">${esc(d.secret)}</div>` : ''}
+      ${d.relations?.length ? `<div class="sec">Feelings</div>${d.relations.map((r) => `<div class="rel"><a class="link" data-p="${r.id}">${esc(r.name)}</a><span>${esc(r.label)} <b style="color:${r.v >= 0 ? '#7fd17f' : '#ff8a7a'}">${r.v > 0 ? '+' : ''}${r.v}</b></span></div>`).join('')}` : ''}
+      ${d.memories?.length ? `<div class="sec">Memories</div>${d.memories.map((m) => `<div class="hist">${esc(m)}</div>`).join('')}` : ''}
       <div class="sec">Family</div>
       <div class="kv"><span>Spouse</span><span>${pl(d.spouse)}</span><span>Father</span><span>${pl(d.father)}</span><span>Mother</span><span>${pl(d.mother)}</span></div>
       <div class="people-list" style="margin-top:4px">${d.children.length ? d.children.map(pl).join(' ') : '<span style="color:var(--muted)">No living children</span>'}</div>
@@ -226,6 +234,8 @@ export class UI {
       </div>
       <div class="sec">Royal family</div>
       <div class="people-list">${d.royals.length ? d.royals.map((p) => `${pl(p)} <span style="color:var(--muted)">${p.age}</span>`).join(' · ') : '<span style="color:var(--muted)">None</span>'}</div>
+      <div class="sec">Tension with other realms</div>
+      ${(d.tensions || []).map((t) => `<div class="rel"><a class="link" data-k="${t.id}">${esc(t.name)}</a><span>${t.cb ? `<i style="color:#ff9c8c">grievance: ${esc(t.cb)}</i> ` : ''}<b style="color:${t.t > 60 ? '#ff7a6a' : t.t > 35 ? '#f3c76b' : '#8fd18f'}">${t.t}</b>/100</span></div><div class="meter"><i style="width:${t.t}%;background:${t.t > 60 ? '#e0533f' : t.t > 35 ? '#d9a441' : '#6fbf73'}"></i></div>`).join('') || '<div style="color:var(--muted);font-size:12px">No neighbours</div>'}
       <div class="sec">Relations</div>
       ${d.relations.filter((r) => r.state !== 'peace' || r.truce || r.tribute).map((r) => `<div class="rel"><a class="link" data-k="${r.id}" style="color:${r.color}">${esc(r.name)}</a><span>${r.state === 'war' ? `<span class="tag war">War</span> ${r.theirDead} slain / ${r.ourDead} lost` : r.state === 'ally' ? '<span class="tag ally">Ally</span>' : r.tribute ? 'Pays tribute' : 'Truce'}</span></div>`).join('') || '<div style="color:var(--muted);font-size:12px">At peace with all</div>'}
       <div class="sec">Chronicle</div>

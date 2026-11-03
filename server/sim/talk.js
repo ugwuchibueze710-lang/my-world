@@ -1,5 +1,6 @@
 // Conversations: people who meet talk about what is actually happening in their lives and their realm.
 import { STATE, ROLE } from '../../shared/constants.js';
+import { chooseInteraction, applyInteraction, opOf } from './social.js';
 
 export const MOOD = { NEUTRAL: 0, HAPPY: 1, SAD: 2, ANGRY: 3, SCARED: 4 };
 const pick = (r, a) => a[Math.floor(r() * a.length)];
@@ -26,13 +27,17 @@ export function maybeTalk(sim) {
     if (!a.alive || a.ageY < 4 || a.talkUntil > sim.realTime) continue;
     if (a.state === STATE.MARCH || a.state === STATE.MIGRATE) { if (r() > 0.15) continue; }
     let b = null;
-    sim.spatial.query(a.x, a.z, 6, (q) => {
+    const sp = a.spouseId ? sim.byId.get(a.spouseId) : null;
+    if (sp && sp.alive && sp.talkUntil <= sim.realTime && Math.hypot(sp.x - a.x, sp.z - a.z) < 12) b = sp; // couples talk to each other first
+    if (!b) sim.spatial.query(a.x, a.z, 6, (q) => {
       if (q === a || q.ageY < 4 || q.talkUntil > sim.realTime || !q.alive) return;
       b = q; return false;
     });
     if (!b) continue;
     if (r() > 0.35 + a.genes.social * 0.5) continue;
-    const convo = compose(sim, a, b);
+    const kind = a.kingdom === b.kingdom && !sim.atWar(a.kingdom, b.kingdom) ? chooseInteraction(sim, a, b) : 'chat';
+    const res = kind === 'chat' ? { kind } : applyInteraction(sim, a, b, kind);
+    const convo = compose(sim, a, b, res);
     if (!convo) continue;
     const dur = convo.lines.length * 3.4 + 1;
     a.talkUntil = b.talkUntil = sim.realTime + dur + 20;
@@ -48,7 +53,7 @@ export function maybeTalk(sim) {
   }
 }
 
-function compose(sim, a, b) {
+function compose(sim, a, b, res = { kind: 'chat' }) {
   const r = sim.rand;
   const ka = sim.kingdoms.get(a.kingdom), kb = sim.kingdoms.get(b.kingdom);
   if (!ka || !kb) return null;
@@ -90,12 +95,30 @@ function compose(sim, a, b) {
     say(child, q, m); say(adult, ans);
     return { lines: L };
   }
+  // the interaction chosen by their relationship decides the shape of the conversation
+  if (res.kind === 'insult') {
+    const sp = sim.byId.get(b.spouseId);
+    say(a, pick(r, [`Out of my way, ${b.name}.`, `Everyone knows you're a fool, ${b.name}.`, sp ? `Does ${sp.name} know what you get up to?` : `No wonder nobody will marry you.`, `You smell like the pig pens.`, `Lazy as ever, I see.`]), 3);
+    say(b, opOf(b, a) < -20 ? pick(r, [`Say that again. I dare you.`, `I've had enough of you!`]) : pick(r, [`What did I ever do to you?`, `Leave me be.`]), opOf(b, a) < -20 ? 3 : 2);
+    if (res.result === 'brawl') say(b, `That's it!`, 3);
+    return { lines: L };
+  }
+  if (res.kind === 'flirt') {
+    const married = a.spouseId || b.spouseId;
+    say(a, married ? pick(r, [`Meet me by the river tonight. No one has to know.`, `I can't stop thinking about you.`, `We shouldn't be talking like this... but I don't care.`]) : pick(r, [`You have the kindest eyes in all of ${ka.name}.`, `Would you walk with me by the river?`, `I've been hoping to see you today.`]), 1);
+    if (res.result === 'accepted' || res.result === 'affair' || res.result === 'proposal') say(b, married ? pick(r, [`...I'll be there.`, `This is madness. Yes.`]) : pick(r, [`I'd like that very much.`, `I was hoping you'd ask.`]), 1);
+    else say(b, pick(r, [`I'm sorry. My heart belongs to another.`, `No. Please don't ask again.`, `You're not my type.`]), 0);
+    if (res.result === 'proposal') say(a, `Then marry me. Today.`, 1);
+    if (res.result === 'caught_flirting') { const sp = sim.byId.get(b.spouseId); if (sp) say(sp, `What is going on here?!`, 3); }
+    return { lines: L };
+  }
+  if (res.kind === 'kind') { say(a, pick(r, [`You work harder than anyone here. Thank you.`, `If you ever need help, come to me.`, `Your children are a credit to you.`]), 1); say(b, pick(r, [`That means a great deal.`, `Bless you, friend.`]), 1); return { lines: L }; }
   const topics = [];
   if (storm) topics.push('storm');
   if (enemyName) topics.push('war', 'war');
   if (fpc < 2.5) topics.push('hunger', 'hunger');
   else topics.push('harvest');
-  if (a.spouseId === b.id) topics.push('spouse', 'spouse');
+  if (a.spouseId === b.id) { topics.length = 0; topics.push('spouse', 'spouse', 'spouse', 'spouse'); if (enemyName) topics.push('war'); if (fpc < 2) topics.push('hunger'); if (a.pregnant || b.pregnant) topics.push('baby', 'baby'); }
   if (!a.spouseId && !b.spouseId && a.sex !== b.sex && a.ageY > 15 && b.ageY > 15 && Math.abs(a.ageY - b.ageY) < 14) topics.push('flirt', 'flirt');
   if (a.genes.ambit > 0.68 && a.loyalty < 0.5) topics.push('rebel');
   if (a.loyalty < 0.4 && fpc < 1) topics.push('defect');
@@ -126,12 +149,17 @@ function compose(sim, a, b) {
       say(a, pick(r, [`Good harvest this year. The barns are full.`, `The wheat stands tall in the east fields.`, `We'll eat well this winter.`]), 1);
       say(b, pick(r, [`Praise the rains!`, `Then we'll have a feast at the castle.`, `May it last. Fat years never do.`]), 1);
       break;
-    case 'spouse':
-      say(a, pick(r, [`There you are, my love.`, `Have you eaten today?`, `I missed you in the fields.`]), 1);
-      say(b, pick(r, [`Always, for you.`, `Come home early tonight.`, `The children were asking for you.`]), 1);
-      if (!a.pregnant && !b.pregnant && r() < 0.5) say(a, pick(r, [`Maybe it's time we had another child.`, `I dream of a big family.`]), 1);
-      effect = () => { a.moodUntil = b.moodUntil = sim.realTime + 30; a.moodSet = b.moodSet = 1; };
+    case 'spouse': {
+      const royal = a.role === ROLE.RULER || b.role === ROLE.RULER;
+      const bt = b.sex === 'F' ? 'queen' : 'king', at = a.sex === 'F' ? 'queen' : 'king';
+      say(a, pick(r, royal ? [`My ${bt}... you light up this cold castle.`, `Every crown is heavy, except when I'm with you.`, `Walk with me, my love. Just us, tonight.`, `Our kingdom needs an heir... and I need you.`]
+        : [`There you are, my love.`, `I missed you in the fields today.`, `Come here. Let me hold you.`, `You're even lovelier than the day we wed.`]), 1);
+      say(b, pick(r, royal ? [`And you are my ${at}, in every way.`, `Then come to bed early tonight.`, `Let us give ${ka.name} a prince... or a princess.`] : [`Always, for you.`, `Come home early tonight.`, `Only if you promise me another dance.`]), 1);
+      if (!a.pregnant && !b.pregnant && r() < 0.6) say(a, pick(r, [`I want a big family with you.`, `Let's have another child.`, `Our children will grow up strong.`]), 1);
+      a.ops[b.id] = Math.min(100, (a.ops[b.id] || 0) + 6); b.ops[a.id] = Math.min(100, (b.ops[a.id] || 0) + 6);
+      effect = () => { a.moodUntil = b.moodUntil = sim.realTime + 60; a.moodSet = b.moodSet = 1; };
       break;
+    }
     case 'flirt':
       say(a, pick(r, [`I've seen you at the well every morning.`, `You have the kindest eyes in all of ${ka.name}.`, `Would you walk with me by the river?`]), 1);
       if (b.genes.social > 0.4) { say(b, pick(r, [`Maybe I go there to see you.`, `You're bold. I like that.`, `I would like that very much.`]), 1); effect = () => { a.moodUntil = b.moodUntil = sim.realTime + 40; a.moodSet = b.moodSet = 1; }; }
