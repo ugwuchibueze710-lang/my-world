@@ -1,0 +1,17 @@
+{
+  "name": "my-world",
+  "version": "1.0.0",
+  "description": "An autonomous 3D world of kingdoms that live, love, starve, weather storms and wage war forever.",
+  "type": "module",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "HOURS_PER_SECOND=50 node server/index.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "three": "0.169.0",
+    "ws": "^8.18.0"
+  }
+}

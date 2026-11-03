@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: my-world
+    runtime: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      - key: HOURS_PER_SECOND
+        value: "1"
+      - key: MAX_POPULATION
+        value: "4000"

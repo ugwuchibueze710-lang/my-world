@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>My World — The Endless Kingdoms</title>
+  <meta name="description" content="An autonomous 3D world where kingdoms are born, grow, starve, survive storms and wage war forever." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+  <script type="importmap">
+    { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
+  </script>
+</head>
+<body>
+  <canvas id="scene"></canvas>
+  <div id="flash"></div>
+  <div id="labels"></div>
+
+  <div id="loading">
+    <div class="load-inner">
+      <div class="crest">♛</div>
+      <h1>The Endless Kingdoms</h1>
+      <p id="load-msg">Forging the continent…</p>
+      <div class="bar"><div id="load-bar"></div></div>
+    </div>
+  </div>
+
+  <header id="topbar">
+    <div class="brand"><span class="crest-sm">♛</span> The Endless Kingdoms</div>
+    <div class="clock">
+      <div id="date">Year 1 · Spring · Day 1</div>
+      <div id="hour">06:00</div>
+    </div>
+    <div class="stats">
+      <div class="stat"><span id="s-pop">0</span><label>People</label></div>
+      <div class="stat"><span id="s-king">0</span><label>Kingdoms</label></div>
+      <div class="stat"><span id="s-wars">0</span><label>At war</label></div>
+      <div class="stat"><span id="s-births">0</span><label>Born</label></div>
+      <div class="stat"><span id="s-deaths">0</span><label>Died</label></div>
+      <div class="stat wide"><span id="s-capital">—</span><label>Capital of the world</label></div>
+    </div>
+    <div class="scale" id="scale">1 sec = 1 hr</div>
+  </header>
+
+  <aside id="realms" class="panel">
+    <div class="panel-head"><h2>Realms</h2><button class="icon" id="realms-toggle" title="Collapse">–</button></div>
+    <div id="realm-list"></div>
+  </aside>
+
+  <aside id="inspector" class="panel hidden">
+    <div class="panel-head"><h2 id="insp-title">—</h2><button class="icon" id="insp-close" title="Close">✕</button></div>
+    <div id="insp-body"></div>
+  </aside>
+
+  <section id="chronicle" class="panel">
+    <div class="panel-head">
+      <h2>Chronicle</h2>
+      <div class="chips">
+        <button class="chip on" data-f="major">Major</button>
+        <button class="chip" data-f="all">Everything</button>
+      </div>
+    </div>
+    <div id="feed"></div>
+  </section>
+
+  <div id="minimap-wrap" class="panel">
+    <canvas id="minimap" width="220" height="220"></canvas>
+    <div class="mm-legend"><span>N ↑</span><span id="mm-weather"></span></div>
+  </div>
+
+  <div id="toolbar">
+    <button class="tool on" id="t-territory" title="Show kingdom borders">Borders</button>
+    <button class="tool on" id="t-labels" title="Show names">Names</button>
+    <button class="tool" id="t-overview" title="See the whole world">World view</button>
+    <button class="tool" id="t-help" title="Controls">?</button>
+  </div>
+
+  <div id="help" class="panel hidden">
+    <div class="panel-head"><h2>How to watch</h2><button class="icon" id="help-close">✕</button></div>
+    <ul>
+      <li><b>Scroll / pinch</b> zoom from the whole continent down to a single person</li>
+      <li><b>Left-drag</b> move around · <b>Right-drag</b> rotate &amp; tilt</li>
+      <li><b>Click</b> a person, castle, or realm to inspect it · <b>Double-click</b> to fly there</li>
+      <li>Click the <b>minimap</b> to jump anywhere</li>
+      <li>Nobody is scripted: every person decides for themselves when to work, eat, drink, marry, flee, fight or rebel. The weather is random.</li>
+    </ul>
+  </div>
+
+  <div id="conn" class="hidden">Reconnecting to the world…</div>
+
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
