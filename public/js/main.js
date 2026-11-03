@@ -376,7 +376,7 @@ class App {
       const line = t.lines[li];
       const a = this.people.agents.get(line.s);
       if (!a) continue;
-      const near = Math.hypot(a.x - focus.x, a.z - focus.z) < 70 && camH < 120;
+      const near = Math.hypot(a.x - focus.x, a.z - focus.z) < 140 && camH < 260;
       const inMovie = movieTalk && movieTalk.id === t.id;
       if (!t.voiced.has(li)) {
         t.voiced.add(li);

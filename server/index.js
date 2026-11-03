@@ -36,8 +36,10 @@ for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => { console.l
 
 const app = express();
 app.disable('x-powered-by');
-app.use(express.static(path.join(ROOT, 'public'), { maxAge: '1h' }));
-app.use('/shared', express.static(path.join(ROOT, 'shared')));
+// always revalidate our own files so every deploy shows up immediately
+const fresh = { maxAge: 0, etag: true, lastModified: true, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') };
+app.use(express.static(path.join(ROOT, 'public'), fresh));
+app.use('/shared', express.static(path.join(ROOT, 'shared'), fresh));
 app.use('/vendor/three', express.static(path.join(ROOT, 'node_modules/three'), { maxAge: '7d' }));
 app.get('/healthz', (req, res) => res.json({ ok: true, pop: sim.people.length, kingdoms: sim.kingdoms.size, time: sim.time }));
 app.get('/api/stats', (req, res) => res.json({ pop: sim.people.length, kingdoms: sim.kingdoms.size, stats: sim.stats, tickMs: +tickCost.toFixed(2) }));
