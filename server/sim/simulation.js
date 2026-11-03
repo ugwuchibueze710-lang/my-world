@@ -82,6 +82,7 @@ export class Simulation {
     this.capitalId = 0;
     this.talks = []; this.talkSeq = 0;
     this.secrets = []; this.secretSeq = 0; this.plots = []; this.ravens = []; this.usurp = null;
+    this.viewers = 0; this.pairLines = new Map();
     if (restore) restore(this); else this.genesis();
   }
 
@@ -423,6 +424,7 @@ export class Simulation {
 
   marry(a, b, silent) {
     a.spouseId = b.id; b.spouseId = a.id;
+    if (a.ops && b.ops) { a.ops[b.id] = Math.max(a.ops[b.id] || 0, 45); b.ops[a.id] = Math.max(b.ops[a.id] || 0, 45); } // newlyweds love each other
     const husband = a.sex === 'M' ? a : b, wife = a.sex === 'M' ? b : a;
     if (wife.kingdom !== husband.kingdom) this.transfer(wife, husband.kingdom);
     const k = this.kingdoms.get(husband.kingdom);

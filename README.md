@@ -35,3 +35,19 @@ Scroll to zoom from the whole continent down to a single person. Left-drag pans,
 | `HOURS_PER_SECOND` | 1 | World hours per real second |
 | `MAX_POPULATION` | 4000 | Soft population cap (protects the server) |
 | `WORLD_SEED` | 20261103 | Changes the shape of the continent |
+
+## AI voices (optional, free with Groq)
+People's conversations, kings' letters and the narrator can be written live by an AI model, using each character's real personality, memories and situation. The simulation still decides what happens; the AI only chooses the words. Without a key, built-in lines are used.
+
+On Render → Environment, add:
+| Name | Value |
+|---|---|
+| `GROQ_API_KEY` | your key from console.groq.com (keep it secret) |
+| `GROQ_API_KEY_2` (optional, also `_3`, `_4`…) | extra Groq keys; the world spreads calls across them and fails over when one hits its daily limit |
+| `LLM_MODEL` | optional, default `llama-3.1-8b-instant` (conversations) |
+| `LLM_MODEL_BIG` | optional, default `llama-3.3-70b-versatile` (letters and narrator) |
+
+It only calls the AI while someone is watching, and stays under a daily token budget sized for Groq's free tier. `/healthz` shows usage.
+
+## Characters
+Rigged characters from [Grab3D](https://grab3d.com) (CC0), compressed for the web. Animations come from Quaternius' Universal Animation Library (CC0), retargeted onto the Grab3D skeletons in the browser.

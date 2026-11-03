@@ -5,6 +5,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { STATE } from '/shared/constants.js';
+import { retargetClips } from './retarget.js';
 
 const ROLE = { COMMONER: 0, SOLDIER: 1, RULER: 2, CONSORT: 3, ROYAL: 4, GENERAL: 5 };
 const hash = (n, k = 1) => { const x = Math.sin(n * 12.9898 * k + k * 78.233) * 43758.5453; return x - Math.floor(x); };
@@ -140,6 +141,8 @@ export class Characters {
       straw: new THREE.MeshStandardMaterial({ color: 0xc9a85a, roughness: 1 }),
     };
     this.ready = true;
+    this.ualScene = gltf.scene; this.ualClips = gltf.animations;
+    this.g3d = new Map(); this.g3dLoading = new Set(); this.loader = new GLTFLoader();
   }
 
   makeSlot() {
@@ -206,11 +209,76 @@ export class Characters {
     }
     root.visible = false;
     this.scene.add(root);
-    return { root, mixer, actions, uniforms, hairMat, clothMat, accentMat, a, agent: 0, current: null, blinkT: 0 };
+    return { kind: 'ual', root, mixer, actions, uniforms, hairMat, clothMat, accentMat, a, agent: 0, current: null, blinkT: 0 };
+  }
+
+  // which Grab3D character (CC0, grab3d.com) best fits this person
+  typeFor(ag) {
+    const female = ag.fl & 1, ageG = (ag.fl >> 1) & 3, role = (ag.fl >> 3) & 7, h = hash(ag.id, 21);
+    if (ageG === 0) return 'baby-character';
+    if (ageG === 1) return ag.age >= 10 ? 'teen-character' : 'child';
+    if (role === ROLE.RULER || role === ROLE.CONSORT) return female ? 'queen' : 'king';
+    if (role === ROLE.SOLDIER || role === ROLE.GENERAL) return female ? 'woman' : h < 0.7 ? 'armored-knight' : 'viking';
+    if (ageG === 3) return female ? 'elderly-woman' : 'elderly-man';
+    if (female) return role === ROLE.ROYAL ? 'queen' : 'woman';
+    return h < 0.55 ? 'farmer' : h < 0.8 ? 'viking' : 'man';
+  }
+  kindFor(ag) {
+    const t = this.typeFor(ag);
+    const m = this.g3d.get(t);
+    if (m) return t;
+    if (!this.g3dLoading.has(t)) {
+      this.g3dLoading.add(t);
+      this.loader.load(`/assets/characters/g3d/${t}.glb`, (g) => {
+        const src = SkeletonUtils.clone(this.ualScene), probe = SkeletonUtils.clone(g.scene);
+        const clips = retargetClips(src, this.ualClips, probe);
+        g.scene.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
+        this.g3d.set(t, { scene: g.scene, clips });
+      }, undefined, () => console.warn('could not load character', t));
+    }
+    return 'ual';
+  }
+  makeG3DSlot(type) {
+    const model = this.g3d.get(type);
+    const root = SkeletonUtils.clone(model.scene);
+    root.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
+    const bones = {}; root.traverse((o) => { if (o.isBone) bones[o.name] = o; });
+    root.updateMatrixWorld(true);
+    const wp = (n, dx, dy, dz) => { const v = (bones[n] || root).getWorldPosition(new THREE.Vector3()); return [v.x + dx, v.y + dy, v.z + dz]; };
+    const attach = (n, mesh, pos, rot = [0, 0, 0]) => { mesh.position.set(...pos); mesh.rotation.set(...rot); mesh.castShadow = true; root.add(mesh); mesh.updateMatrixWorld(true); (bones[n] || root).attach(mesh); return mesh; };
+    const accentMat = new THREE.MeshStandardMaterial({ roughness: 0.6 });
+    const a = {
+      sword: attach('RightHand', new THREE.Group().add(new THREE.Mesh(this.geo.blade, this.mat.steel).rotateX(Math.PI / 2).translateY(0.52), new THREE.Mesh(this.geo.guard, this.mat.gold).translateZ(0.08), new THREE.Mesh(this.geo.grip, this.mat.wood).rotateX(Math.PI / 2)), wp('RightHand', 0, -0.04, 0.03)),
+      shield: attach('LeftForeArm', new THREE.Mesh(this.geo.shield, accentMat), wp('LeftForeArm', 0.05, -0.05, 0.1), [Math.PI / 2, 0, 0]),
+      tool: attach('RightHand', new THREE.Group(), wp('RightHand', 0, -0.04, 0.03)),
+    };
+    const handle = new THREE.Mesh(this.geo.handle, this.mat.wood); handle.rotation.x = Math.PI / 2; handle.position.z = 0.25; a.tool.add(handle);
+    a.hoeHead = new THREE.Mesh(this.geo.hoe, this.mat.steel); a.hoeHead.position.set(0, -0.06, 0.52); a.tool.add(a.hoeHead);
+    a.pickHead = new THREE.Mesh(this.geo.pick, this.mat.steel); a.pickHead.position.set(0, 0, 0.5); a.pickHead.rotation.y = Math.PI / 2; a.tool.add(a.pickHead);
+    a.hammerHead = new THREE.Mesh(this.geo.hammer, this.mat.steel); a.hammerHead.position.set(0, 0, 0.5); a.tool.add(a.hammerHead);
+    const mixer = new THREE.AnimationMixer(root), actions = {};
+    for (const clip of model.clips) {
+      const act = mixer.clipAction(clip);
+      if (!/Loop/.test(clip.name) && !['Sword_Attack', 'Fixing_Kneeling', 'Interact', 'Punch_Cross', 'Sword_Idle'].includes(clip.name)) { act.setLoop(THREE.LoopOnce, 1); act.clampWhenFinished = true; }
+      actions[clip.name] = act;
+    }
+    root.visible = false; this.scene.add(root);
+    const uniforms = { uMood: { value: 0 }, uBlink: { value: 0 }, uMouth: { value: 0 } };
+    return { kind: type, root, mixer, actions, uniforms, accentMat, a, agent: 0, current: null, blinkT: 0, scale: [1, 1, 1] };
+  }
+  dressG3D(slot, ag) {
+    const role = (ag.fl >> 3) & 7, soldier = role === ROLE.SOLDIER || role === ROLE.GENERAL;
+    const kc = this.people.kColors.get(ag.k) || new THREE.Color(0.6, 0.6, 0.6);
+    slot.accentMat.color.copy(kc);
+    slot.a.sword.visible = soldier; slot.a.shield.visible = soldier;
+    const v = 0.95 + hash(ag.id, 11) * 0.09;
+    slot.scale = [v * (0.96 + hash(ag.id, 12) * 0.08), v, v * (0.96 + hash(ag.id, 12) * 0.08)];
+    slot.dressKey = `${ag.k}|${ag.fl}|${Math.floor(ag.age)}`;
   }
 
   // a stable, unique look for each simulated person
   dress(slot, ag) {
+    if (slot.kind && slot.kind !== 'ual') return this.dressG3D(slot, ag);
     const u = slot.uniforms, id = ag.id;
     const female = ag.fl & 1, ageG = (ag.fl >> 1) & 3, role = (ag.fl >> 3) & 7;
     const kc = this.people.kColors.get(ag.k) || new THREE.Color(0.6, 0.6, 0.6);
@@ -298,12 +366,23 @@ export class Characters {
     }
     const want = new Set(cand.slice(0, Math.floor(this.max)).map((c) => c[1].id));
     // release slots
-    for (const s of this.slots) if (s.agent && !want.has(s.agent)) { this.byAgent.delete(s.agent); s.agent = 0; s.root.visible = false; s.current = null; s.mixer.stopAllAction(); }
+    const release = (s) => { this.byAgent.delete(s.agent); s.agent = 0; s.root.visible = false; s.current = null; s.mixer.stopAllAction(); };
+    for (const s of this.slots) {
+      if (!s.agent) continue;
+      if (!want.has(s.agent)) { release(s); continue; }
+      const ag = this.people.agents.get(s.agent);
+      if (ag && s.kind !== this.kindFor(ag)) release(s); // their real model has finished loading (or their role changed)
+    }
     // assign
     for (const id of want) {
       if (this.byAgent.has(id)) continue;
-      let s = this.slots.find((x) => !x.agent);
-      if (!s) { if (this.slots.length >= 80) break; s = this.makeSlot(); this.slots.push(s); }
+      const agw = this.people.agents.get(id); if (!agw) continue;
+      const kind = this.kindFor(agw);
+      let s = this.slots.find((x) => !x.agent && x.kind === kind);
+      if (!s) {
+        if (this.slots.length >= 90) { const spare = this.slots.findIndex((x) => !x.agent); if (spare < 0) break; this.scene.remove(this.slots[spare].root); this.slots.splice(spare, 1); }
+        s = kind === 'ual' ? this.makeSlot() : this.makeG3DSlot(kind); this.slots.push(s);
+      }
       s.agent = id; this.byAgent.set(id, s); s.dressKey = null; s.root.visible = true;
       const ag = this.people.agents.get(id); s.px = ag.x; s.pz = ag.z; s.speed = 0;
     }
@@ -343,6 +422,7 @@ export class Characters {
       }
       // face: mood, blink, lip sync (same signals as the instanced figures)
       const u = s.uniforms;
+      if (s.kind !== 'ual') { const A = s.a, st = ag.st; A.tool.visible = !A.sword.visible && (st === STATE.FARM || st === STATE.MINE || st === STATE.BUILD) && !ag.mv; A.hoeHead.visible = st === STATE.FARM; A.pickHead.visible = st === STATE.MINE; A.hammerHead.visible = st === STATE.BUILD; continue; }
       u.uMood.value = (ag.ex >> 2) & 7;
       s.blinkT -= dt; if (s.blinkT < -0.14) s.blinkT = 2 + hash(ag.id + time) * 4;
       u.uBlink.value = s.blinkT < 0 ? 1 : 0;
@@ -360,7 +440,7 @@ export class Characters {
   // world position of a character's head (for the movie camera)
   headOf(id) {
     const s = this.byAgent.get(id); if (!s) return null;
-    const b = s.root.getObjectByName('DEF-head'); if (!b) return null;
+    const b = s.root.getObjectByName('Head') || s.root.getObjectByName('DEF-head'); if (!b) return null;
     return b.getWorldPosition(new THREE.Vector3());
   }
 }

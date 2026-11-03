@@ -60,6 +60,7 @@ export function restorer(buf) {
     if (d.dayClock !== undefined) sim.dayClock = d.dayClock;
     sim.secrets = d.secrets || []; sim.secretSeq = d.secretSeq || 0; sim.plots = d.plots || []; sim.ravens = d.ravens || [];
     for (const p of sim.people) ensurePersona(p, sim.rand);
+    for (const p of sim.people) if (p.spouseId && p.ops[p.spouseId] === undefined) p.ops[p.spouseId] = 45; // existing marriages begin loving
     sim.weather.storms = d.weather.storms; sim.weather.nextId = d.weather.nextId; sim.weather.windAngle = d.weather.windAngle;
     unf32(d.food, sim.food); unf32(d.cult, sim.cult); unf32(d.minLeft, sim.minLeft); unf32(d.dynBias, sim.dynBias);
     const away = Math.round((Date.now() - d.savedAt) / 1000);

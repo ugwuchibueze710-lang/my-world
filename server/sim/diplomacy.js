@@ -2,6 +2,8 @@
 // and each ruler answers according to their own character. Tension builds until something breaks.
 import { calendar } from '../../shared/constants.js';
 import { opOf } from './social.js';
+import { canCall, writeLetter, writeNarration, BIG } from './llm.js';
+import { kingdomSheet, traits } from './facts.js';
 
 const pick = (r, a) => a[Math.floor(r() * a.length)];
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
@@ -115,8 +117,22 @@ function send(sim, k, o, kind) {
       text = `${tn}. You answer for ${rel.cb}. ${k.name} demands justice — the guilty delivered to us in chains — or we shall take it ourselves.`;
       break;
   }
-  const letter = { from: k.id, to: o.id, kind, text, arrive: sim.realTime + 15 + Math.random() * 20, ...extra };
-  sim.ravens.push(letter);
+  const dispatch = (words) => {
+    const letter = { from: k.id, to: o.id, kind, text: words, arrive: sim.realTime + 15 + Math.random() * 20, ...extra };
+    sim.ravens.push(letter);
+    announce(sim, k, o, kind, words, their);
+  };
+  const INTENT = { gift: `send a gift of ${extra.food} sacks of grain as friendship`, marriage: `propose a royal marriage: ${extra.a ? sim.fullName(sim.byId.get(extra.a)) : ''} to wed ${extra.b ? sim.fullName(sim.byId.get(extra.b)) : ''}`,
+    tribute: `demand ${extra.food} sacks of grain as tribute, or face force`, threat: `threaten them${rel.cb ? ` over ${rel.cb}` : ''}; demand they bend the knee`, insult: 'insult them and their ruler', accuse: `accuse them of ${rel.cb} and demand justice` };
+  if (canCall(BIG, sim.viewers || 0)) {
+    const facts = `WRITER: ${sim.fullName(ru)} (${traits(ru)}).\n${kingdomSheet(sim, k)}\nRECIPIENT: ${tn} (${their ? traits(their) : ''}).\n${kingdomSheet(sim, o)}\nINTENT: ${INTENT[kind]}. Tension between the realms: ${Math.round(rel.tension || 0)}/100.`;
+    writeLetter(facts).then((w) => dispatch(w || text));
+  } else dispatch(text);
+  rel.tension = clamp((rel.tension || 0) + ({ threat: 10, insult: 14, accuse: 12, tribute: 8, gift: -6, marriage: -4 }[kind] || 0), 0, 100);
+  o.relOf(k.id).tension = rel.tension;
+}
+
+function announce(sim, k, o, kind, text, their) {
   const narr = {
     threat: `A raven flies from ${k.name}. Its message is not a kind one.`,
     tribute: `${k.name} has made its demand. Now ${o.name} must decide: pay, or bleed.`,
@@ -126,8 +142,6 @@ function send(sim, k, o, kind) {
     gift: `A gesture of friendship. In times like these, it may be worth more than gold.`,
   }[kind];
   sim.event('letter', `✉ ${sig(sim, k)} writes to ${o.name}: “${text}”`, { k: k.id, k2: o.id, x: k.x, z: k.z, letter: kind, narr, quote: text, fromName: sig(sim, k) });
-  rel.tension = clamp((rel.tension || 0) + ({ threat: 10, insult: 14, accuse: 12, tribute: 8, gift: -6, marriage: -4 }[kind] || 0), 0, 100);
-  o.relOf(k.id).tension = rel.tension;
 }
 
 function receive(sim, l) {
@@ -195,9 +209,22 @@ function receive(sim, l) {
       break;
     }
   }
-  if (text) sim.event(kind, text, { k: k.id, k2: from.id, x: k.x, z: k.z, narr: narr || undefined, letterReply: l.kind });
+  if (text) {
+    const post = (t) => sim.event(kind, t, { k: k.id, k2: from.id, x: k.x, z: k.z, narr: narr || undefined, letterReply: l.kind });
+    if (canCall(BIG, sim.viewers || 0) && l.kind !== 'gift') {
+      const facts = `WRITER: ${name} (${traits(ru)}), replying to a letter from ${sig(sim, from)}.\nTheir letter said: "${l.text}"\n${kingdomSheet(sim, k)}\nDECIDED RESPONSE (write the reply letter expressing exactly this): ${text}`;
+      writeLetter(facts).then((w) => post(w ? `${name} replies to ${from.name}: “${w}” ${outcomeTag(l.kind, text)}` : text));
+    } else post(text);
+  }
   const hist = `Year ${calendar(sim.time).year}: ${l.kind === 'gift' ? 'received a gift from' : l.kind === 'marriage' ? 'a marriage was proposed by' : `received a ${l.kind} from`} ${from.name}.`;
   k.history.push(hist);
+}
+
+function outcomeTag(kind, text) {
+  if (/pays|accepts!|conciliatory|wed/.test(text)) return '(They yield.)';
+  if (/refuses/.test(text)) return '(Refused.)';
+  if (/laughs/.test(text)) return '(Laughed off.)';
+  return '(Defiance.)';
 }
 
 // the storyteller looks at the whole world and points at what matters most right now
@@ -213,7 +240,7 @@ export function storyteller(sim) {
   for (const k of ks) {
     const fpc = k.food / (k.pop + 1);
     if (k.pop > 8 && fpc < 1.2) ideas.push([60, `In ${k.name}, the granaries are nearly empty. Hungry people make dangerous choices.`]);
-    if (k.atWar) ideas.push([50, `${k.name} is at war. Every mother there is counting her sons.`]);
+    if (k.atWar) ideas.push([50, k.kids > 0 || k.men > 2 ? `${k.name} is at war. Every mother there is counting her sons.` : `${k.name} is at war — with almost no one to fight it.`]);
     const ru = sim.byId.get(k.rulerId);
     if (ru && ru.ageY < 16) ideas.push([55, `A child sits on the throne of ${k.name}. Ambitious eyes are watching.`]);
   }
@@ -221,6 +248,7 @@ export function storyteller(sim) {
   if (sim.secrets.length) ideas.push([45, `Not every marriage in this world is what it seems. Secrets have a way of coming out.`]);
   const cap = sim.kingdoms.get(sim.capitalId);
   if (cap) ideas.push([40, `${cap.name} sits at the top of the world. History has never been kind to those who stand highest.`]);
+  if (ks.every((k) => k.pop <= 3)) ideas.push([30, `Two crowns. Two couples. A whole world empty around them. What they do now will echo for a thousand years.`]);
   if (!ideas.length) ideas.push([10, pick(r, [`For now, the land is quiet. But quiet never lasts.`, `The seasons turn. The people work, love and grow. Beneath it all, something is stirring.`])]);
   ideas.sort((a, b) => b[0] - a[0]);
   const top = ideas.slice(0, 3);
@@ -229,5 +257,9 @@ export function storyteller(sim) {
   if (!fresh.length) return;
   const [, text] = fresh[Math.floor(r() * fresh.length)];
   sim.recentNarr.push(text); if (sim.recentNarr.length > 6) sim.recentNarr.shift();
-  sim.event('narration', text, { narr: text, narrOnly: true });
+  if (canCall(BIG, sim.viewers || 0)) {
+    const recent = sim.events.filter((e) => !e.minor && e.type !== 'narration' && e.type !== 'weather').slice(-6).map((e) => e.text.slice(0, 160)).join('\n');
+    const facts = `STORYLINES RIGHT NOW:\n${top.map(([, t]) => '- ' + t).join('\n')}\nRECENT EVENTS:\n${recent}\nWrite the narrator's next line, focusing on the most dramatic storyline. Previous narration (do not repeat): ${sim.recentNarr.slice(-3).join(' | ')}`;
+    writeNarration(facts).then((w) => sim.event('narration', w || text, { narr: w || text, narrOnly: true, ai: !!w }));
+  } else sim.event('narration', text, { narr: text, narrOnly: true });
 }

@@ -1,6 +1,8 @@
 // Conversations: people who meet talk about what is actually happening in their lives and their realm.
 import { STATE, ROLE } from '../../shared/constants.js';
 import { chooseInteraction, applyInteraction, opOf } from './social.js';
+import { canCall, writeConversation, SMALL } from './llm.js';
+import { personSheet, kingdomSheet, worldLine, interactionLine } from './facts.js';
 
 export const MOOD = { NEUTRAL: 0, HAPPY: 1, SAD: 2, ANGRY: 3, SCARED: 4 };
 const pick = (r, a) => a[Math.floor(r() * a.length)];
@@ -37,12 +39,37 @@ export function maybeTalk(sim) {
     if (r() > 0.35 + a.genes.social * 0.5) continue;
     const kind = a.kingdom === b.kingdom && !sim.atWar(a.kingdom, b.kingdom) ? chooseInteraction(sim, a, b) : 'chat';
     const res = kind === 'chat' ? { kind } : applyInteraction(sim, a, b, kind);
-    const convo = compose(sim, a, b, res);
-    if (!convo) continue;
+    const template = compose(sim, a, b, res);
+    if (!template) continue;
+    // let the AI give them their own words when it can; otherwise speak the template
+    if (canCall(SMALL, sim.viewers || 0)) {
+      a.talkUntil = b.talkUntil = sim.realTime + 15; // they pause, gathering their words
+      const key = a.id < b.id ? a.id + '-' + b.id : b.id + '-' + a.id;
+      const prev = (sim.pairLines.get(key) || []).join(' / ');
+      const ka = sim.kingdoms.get(a.kingdom);
+      const facts = [personSheet(sim, a, 'A'), personSheet(sim, b, 'B'), ka ? kingdomSheet(sim, ka) : '', worldLine(sim, a.x, a.z), interactionLine(sim, a, b, res),
+        prev ? `Earlier lines between them (do not repeat): ${prev}` : ''].filter(Boolean).join('\n');
+      writeConversation(facts).then((lines) => {
+        if (!a.alive || !b.alive) return;
+        const name = (p) => (sim.title(p) ? sim.title(p) + ' ' : '') + p.name;
+        const conv = lines && lines.length >= 2
+          ? { lines: lines.map((l) => { const p = l.who === 'B' ? b : a; return { s: p.id, n: name(p), f: p.sex === 'F' ? 1 : 0, c: p.ageY < 13 ? 1 : p.ageY > 60 ? 2 : 0, text: l.text, mood: l.mood, ai: 1 }; }), effect: template.effect }
+          : template;
+        startConversation(sim, a, b, conv);
+        sim.pairLines.set(key, conv.lines.map((l) => l.text).slice(-4));
+      });
+      continue;
+    }
+    startConversation(sim, a, b, template);
+  }
+}
+
+function startConversation(sim, a, b, convo) {
+  {
     const dur = convo.lines.length * 3.4 + 1;
     a.talkUntil = b.talkUntil = sim.realTime + dur + 20;
     for (const [x, y] of [[a, b], [b, a]]) {
-      const busy = x.task && ['fight', 'flee', 'march', 'migrate', 'defend'].includes(x.task.type);
+      const busy = x.task && ['fight', 'flee', 'march', 'migrate', 'defend', 'brawl', 'vendetta', 'sleep'].includes(x.task.type);
       if (!busy && x.ageY >= 3) { x.task = { type: 'talk', partner: y.id, until: sim.realTime + dur, t: 0 }; x.thought = `Talking with ${y.name}`; }
     }
     const c = { id: ++sim.talkSeq, a: a.id, b: b.id, k: a.kingdom, t: +sim.realTime.toFixed(1), lines: convo.lines };
@@ -113,18 +140,28 @@ function compose(sim, a, b, res = { kind: 'chat' }) {
     return { lines: L };
   }
   if (res.kind === 'kind') { say(a, pick(r, [`You work harder than anyone here. Thank you.`, `If you ever need help, come to me.`, `Your children are a credit to you.`]), 1); say(b, pick(r, [`That means a great deal.`, `Bless you, friend.`]), 1); return { lines: L }; }
+  // only talk about things that actually exist
+  const others = [...ka.members].filter((id) => id !== a.id && id !== b.id).map((id) => sim.byId.get(id)).filter((q) => q && q.ageY > 14);
+  const kidsOf = (p) => (p.children || []).map((id) => sim.byId.get(id)).filter((c) => c && c.alive && c.ageY < 16);
+  const ourKids = [...new Set([...kidsOf(a), ...kidsOf(b)])];
+  const rival = [...sim.kingdoms.values()].filter((o) => o !== ka).sort((x, y) => (ka.relOf(y.id).tension || 0) - (ka.relOf(x.id).tension || 0))[0];
+  const rivalT = rival ? ka.relOf(rival.id).tension || 0 : 0;
+  const lastLetter = sim.events.slice(-40).reverse().find((e) => e.type === 'letter' && (e.k === ka.id || e.k2 === ka.id));
   const topics = [];
   if (storm) topics.push('storm');
   if (enemyName) topics.push('war', 'war');
   if (fpc < 2.5) topics.push('hunger', 'hunger');
   else topics.push('harvest');
-  if (a.spouseId === b.id) { topics.length = 0; topics.push('spouse', 'spouse', 'spouse', 'spouse'); if (enemyName) topics.push('war'); if (fpc < 2) topics.push('hunger'); if (a.pregnant || b.pregnant) topics.push('baby', 'baby'); }
+  if (a.spouseId === b.id) { topics.length = 0; topics.push('spouse', 'spouse', 'spouse'); if (enemyName) topics.push('war'); if (fpc < 2) topics.push('hunger'); if (a.pregnant || b.pregnant) topics.push('baby', 'baby'); if (ka.pop <= 3) topics.push('founders'); if (rival && (rivalT > 30 || lastLetter)) topics.push('rival'); if (ourKids.length) topics.push('kids'); }
   if (!a.spouseId && !b.spouseId && a.sex !== b.sex && a.ageY > 15 && b.ageY > 15 && Math.abs(a.ageY - b.ageY) < 14) topics.push('flirt', 'flirt');
   if (a.genes.ambit > 0.68 && a.loyalty < 0.5) topics.push('rebel');
   if (a.loyalty < 0.4 && fpc < 1) topics.push('defect');
   if (sim.capitalId && sim.capitalId !== ka.id) topics.push('capital');
   if (ka.capital) topics.push('glory');
-  topics.push('king', 'gossip', 'weather');
+  if (others.length >= 2 && ruler && ruler !== a && ruler !== b) topics.push('king');
+  if (others.length) topics.push('gossip');
+  if (rival && (rivalT > 30 || lastLetter)) topics.push('rival');
+  topics.push('weather');
   if (a.pregnant || b.pregnant) topics.push('baby');
   const topic = pick(r, topics);
 
@@ -136,7 +173,7 @@ function compose(sim, a, b, res = { kind: 'chat' }) {
       break;
     }
     case 'war':
-      say(a, pick(r, [`They say ${enemyName} will march on us before the snows.`, `My cousin died fighting ${enemyName}.`, `${rulerName} will crush ${enemyName}, you'll see.`]), a.genes.courage > 0.5 ? 3 : 4);
+      say(a, pick(r, [`They say ${enemyName} will march on us before the snows.`, ...(ka.relOf(enemy[0]).ourDead > 0 ? [`Good people of ours have died fighting ${enemyName}.`] : []), `${rulerName} will crush ${enemyName}, you'll see.`]), a.genes.courage > 0.5 ? 3 : 4);
       say(b, b.genes.courage > 0.5 ? pick(r, [`Let them come. I'll stand at the gate myself.`, `${ka.name} has never bowed to anyone.`]) : pick(r, [`I don't want to die for ${rulerName}'s pride.`, `I pray it ends soon.`]), b.genes.courage > 0.5 ? 3 : 2);
       if (r() < 0.5) say(a, pick(r, [`Sharpen your spear, then.`, `Then may our gods be stronger than theirs.`]));
       break;
@@ -154,8 +191,8 @@ function compose(sim, a, b, res = { kind: 'chat' }) {
       const bt = b.sex === 'F' ? 'queen' : 'king', at = a.sex === 'F' ? 'queen' : 'king';
       say(a, pick(r, royal ? [`My ${bt}... you light up this cold castle.`, `Every crown is heavy, except when I'm with you.`, `Walk with me, my love. Just us, tonight.`, `Our kingdom needs an heir... and I need you.`]
         : [`There you are, my love.`, `I missed you in the fields today.`, `Come here. Let me hold you.`, `You're even lovelier than the day we wed.`]), 1);
-      say(b, pick(r, royal ? [`And you are my ${at}, in every way.`, `Then come to bed early tonight.`, `Let us give ${ka.name} a prince... or a princess.`] : [`Always, for you.`, `Come home early tonight.`, `Only if you promise me another dance.`]), 1);
-      if (!a.pregnant && !b.pregnant && r() < 0.6) say(a, pick(r, [`I want a big family with you.`, `Let's have another child.`, `Our children will grow up strong.`]), 1);
+      say(b, pick(r, royal ? [`And you are my ${at}, in every way.`, `Then come to bed early tonight.`, `Let us give ${ka.name} a prince... or a princess.`] : [`Always, for you.`, `Come home early tonight.`, `Only if you promise me another dance.`, ...(ourKids.length ? [`The children were asking for you.`] : [])]), 1);
+      if (!a.pregnant && !b.pregnant && r() < 0.6) say(a, pick(r, ourKids.length ? [`Let's have another child.`, `Our children will grow up strong.`] : [`I want a big family with you.`, `I dream of the day we hold our first child.`]), 1);
       a.ops[b.id] = Math.min(100, (a.ops[b.id] || 0) + 6); b.ops[a.id] = Math.min(100, (b.ops[a.id] || 0) + 6);
       effect = () => { a.moodUntil = b.moodUntil = sim.realTime + 60; a.moodSet = b.moodSet = 1; };
       break;
@@ -195,12 +232,27 @@ function compose(sim, a, b, res = { kind: 'chat' }) {
     case 'king':
       if (ruler && (ruler.id === a.id || ruler.id === b.id)) {
         const subj = ruler.id === a.id ? b : a;
-        say(subj, pick(r, [`Your Majesty.`, `My liege, the people ask for more bread.`, `Long live the crown!`]), 0);
+        say(subj, pick(r, [`Your Majesty.`, ...(fpc < 2 && others.length > 3 ? [`My liege, the people ask for more bread.`] : []), `Long live the crown!`]), 0);
         say(ruler, ruler.genes.aggr > 0.6 ? pick(r, [`Bread is earned with the sword.`, `Keep working. ${ka.name} needs strong backs.`]) : pick(r, [`I hear them. We'll share the stores.`, `Thank you, friend. Go in peace.`]), ruler.genes.aggr > 0.6 ? 3 : 1);
       } else {
         say(a, pick(r, [`What do you make of ${rulerName}?`, `${rulerName} looked troubled today.`, `Did you see ${rulerName} riding out this morning?`]));
         say(b, b.loyalty > 0.6 ? pick(r, [`A wise ruler. We're lucky.`, `I'd die for the crown.`]) : pick(r, [`Too proud. It'll be our ruin.`, `Rulers come and go. The fields stay.`]), b.loyalty > 0.6 ? 1 : 0);
       }
+      break;
+    case 'founders':
+      say(a, pick(r, [`Just the two of us, and all this land.`, `We are the first of ${ka.name}. Everything here begins with us.`, `One day these hills will be full of our people.`, `I wonder if anyone will remember that we were the first.`]), 1);
+      say(b, pick(r, [`Then let's make it a kingdom worth remembering.`, `Our children will build what we started.`, `As long as we're together, it is enough.`]), 1);
+      break;
+    case 'kids': {
+      const c = pick(r, ourKids);
+      say(a, pick(r, [`${c.name} is growing so fast.`, `${c.name} asked me about the old wars today.`, `Did you see ${c.name} at the well? Such a strong child.`]), 1);
+      say(b, pick(r, [`They'll make us proud one day.`, `Too fast. I want them small a little longer.`, `${c.ageY < 6 ? 'Still so little.' : 'Soon they will be working the fields.'}`]), 1);
+      break;
+    }
+    case 'rival':
+      if (lastLetter && lastLetter.k !== ka.id) say(a, `Did you read what ${sim.kingdoms.get(lastLetter.k)?.name || 'they'} wrote to us?`, rivalT > 50 ? 3 : 0);
+      else say(a, pick(r, [`What do you think ${rival.name} is planning?`, `${rival.name} grows bolder every season.`, `I don't trust ${rival.name}.`]), rivalT > 50 ? 3 : 0);
+      say(b, rivalT > 60 ? pick(r, [`If it comes to war, we must be ready.`, `They will not take what is ours.`]) : rivalT > 30 ? pick(r, [`Words are cheap. Let them talk.`, `We watch them, and we wait.`]) : pick(r, [`They seem peaceful enough, for now.`, `Perhaps one day we'll be friends.`]), rivalT > 60 ? 3 : 0);
       break;
     case 'gossip': {
       const others = [...ka.members].map((id) => sim.byId.get(id)).filter((q) => q && q !== a && q !== b && q.ageY > 14);
@@ -210,9 +262,12 @@ function compose(sim, a, b, res = { kind: 'chat' }) {
       say(b, pick(r, [`No! Really?`, `I always knew it.`, `Keep your voice down.`, `That's none of our business.`]));
       break;
     }
-    default:
-      say(a, pick(r, [`Fine weather today.`, `My back aches from the fields.`, `Have you seen the birds? Winter is coming.`, `The river is high this year.`]));
-      say(b, pick(r, [`Aye, it is.`, `Mine too, friend.`, `Let's hope it holds.`, `Good for the crops.`]));
+    default: {
+      const pairs = [[`Fine weather today.`, `Let's hope it holds.`], [`My back aches from the fields.`, `Mine too. Rest tonight.`],
+        [`Have you seen the birds flying south?`, `Colder days are coming, then.`], [`The river is high this year.`, `Good for the crops.`], [`Listen to that wind.`, `Storm weather. Keep the fire going.`]];
+      const [q, ans] = pick(r, pairs);
+      say(a, q); say(b, ans);
+    }
   }
   return { lines: L, effect };
 }

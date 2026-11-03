@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { WebSocketServer } from 'ws';
 import { Simulation } from './sim/simulation.js';
 import { serialize, restorer, createStore } from './sim/persist.js';
+import { llmStatus } from './sim/llm.js';
 import { DEFAULT_HOURS_PER_SECOND } from '../shared/constants.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -41,7 +42,7 @@ const fresh = { maxAge: 0, etag: true, lastModified: true, setHeaders: (res) => 
 app.use(express.static(path.join(ROOT, 'public'), fresh));
 app.use('/shared', express.static(path.join(ROOT, 'shared'), fresh));
 app.use('/vendor/three', express.static(path.join(ROOT, 'node_modules/three'), { maxAge: '7d' }));
-app.get('/healthz', (req, res) => res.json({ ok: true, pop: sim.people.length, kingdoms: sim.kingdoms.size, time: sim.time, resumed: !!restore, saves: store.kind, lastSave: lastSaveAt ? Math.round((Date.now() - lastSaveAt) / 1000) + 's ago' : 'never' }));
+app.get('/healthz', (req, res) => res.json({ ok: true, pop: sim.people.length, kingdoms: sim.kingdoms.size, time: sim.time, resumed: !!restore, saves: store.kind, lastSave: lastSaveAt ? Math.round((Date.now() - lastSaveAt) / 1000) + 's ago' : 'never', ai: llmStatus() }));
 app.get('/api/stats', (req, res) => res.json({ pop: sim.people.length, kingdoms: sim.kingdoms.size, stats: sim.stats, tickMs: +tickCost.toFixed(2) }));
 
 const server = http.createServer(app);
@@ -69,6 +70,7 @@ setInterval(() => {
   const t0 = performance.now();
   try { sim.tick(dt); } catch (err) { console.error('[sim] tick error', err); }
   tickCost = tickCost * 0.95 + (performance.now() - t0) * 0.05;
+  sim.viewers = wss.clients.size;
   if (!wss.clients.size) { sim.fx.length = 0; return; }
   sendT += dt; stateT += dt; landT += dt;
   if (sendT >= 0.25) {
