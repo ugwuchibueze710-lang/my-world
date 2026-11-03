@@ -124,6 +124,7 @@ export class Cinema {
     if (!this.active) return;
     const sh = this.shot; if (!sh) return;
     sh.t += dt;
+    if (sh.type !== 'talk' && sh.t > 1.2 && this.activeTalk()) { this.nextShot(true, 'talk'); return; }
     const k = this.kingdom() || this.k;
     if (!k) { this.stop(); return; }
     const w = this.app.world, P = this.app.people.agents;

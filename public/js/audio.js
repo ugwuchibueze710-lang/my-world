@@ -15,6 +15,8 @@ export class AudioSys {
   }
 
   async enable() {
+    this.userMuted = false;
+    if ('speechSynthesis' in window) { speechSynthesis.cancel(); if (!this.voices.length) this.voices = speechSynthesis.getVoices().filter((v) => /^en/i.test(v.lang)); }
     if (this.ctx) { await this.ctx.resume(); this.on = true; this.master.gain.setTargetAtTime(0.9, this.ctx.currentTime, 0.3); return; }
     const ctx = this.ctx = new (window.AudioContext || window.webkitAudioContext)();
     this.master = ctx.createGain(); this.master.gain.value = 0.9;
@@ -52,7 +54,7 @@ export class AudioSys {
     this.t = 0;
   }
 
-  disable() { this.on = false; if (this.ctx) this.master.gain.setTargetAtTime(0, this.ctx.currentTime, 0.2); if ('speechSynthesis' in window) speechSynthesis.cancel(); this.queue = []; this.speaking = null; }
+  disable() { this.userMuted = true; this.on = false; if (this.ctx) this.master.gain.setTargetAtTime(0, this.ctx.currentTime, 0.2); if ('speechSynthesis' in window) speechSynthesis.cancel(); this.queue = []; this.speaking = null; }
 
   set(layer, v, tc = 0.6) { if (layer) layer.g.gain.setTargetAtTime(v, this.ctx.currentTime, tc); }
 
@@ -155,6 +157,7 @@ export class AudioSys {
     const done = () => { if (this.speaking !== u) return; this.speaking = null; opts.onend?.(); setTimeout(() => this.pump(), opts.kind === 'narrator' ? 400 : 150); };
     u.onend = done; u.onerror = done;
     this.speaking = u;
+    if (speechSynthesis.paused) speechSynthesis.resume(); // Chrome can get stuck paused
     speechSynthesis.speak(u);
     // safety: some browsers never fire onend
     setTimeout(done, 1500 + text.length * 120);
