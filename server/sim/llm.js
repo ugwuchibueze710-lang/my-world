@@ -11,8 +11,22 @@ const KEYS = [...new Set([
 ].map((k) => String(k || '').trim()).filter(Boolean))];
 const KEY = KEYS[0] || '';
 const keyState = KEYS.map(() => ({ day: '', used: {}, disabledUntil: 0 }));
-const SMALL = process.env.LLM_MODEL || 'llama-3.1-8b-instant';
-const BIG = process.env.LLM_MODEL_BIG || 'llama-3.3-70b-versatile';
+const SMALL = process.env.LLM_MODEL || 'openai/gpt-oss-20b';
+const BIG = process.env.LLM_MODEL_BIG || 'openai/gpt-oss-120b';
+// if Groq retires a model (HTTP 404), we look up what it serves now and switch automatically
+const remap = {};
+let modelList = null;
+async function replacementFor(model, key) {
+  try {
+    if (!modelList) {
+      const res = await fetch(`${BASE}/models`, { headers: { Authorization: `Bearer ${key}` } });
+      const j = await res.json(); modelList = (j.data || []).map((m) => m.id).filter((id) => !/whisper|tts|guard|embed|vision|orpheus|playai/i.test(id));
+    }
+    const want = model === BIG ? [/gpt-oss-120b/, /qwen/, /70b|120b|large/] : [/gpt-oss-20b/, /8b|20b|instant|mini|small/, /qwen/];
+    for (const re of want) { const hit = modelList.find((id) => re.test(id) && id !== model); if (hit) return hit; }
+    return modelList.find((id) => id !== model) || null;
+  } catch { return null; }
+}
 const BUDGET = { [SMALL]: Number(process.env.LLM_TPD_SMALL) || 420000, [BIG]: Number(process.env.LLM_TPD_BIG) || 85000 };
 const MIN_GAP = { [SMALL]: Number(process.env.LLM_GAP_SMALL) || 3500, [BIG]: Number(process.env.LLM_GAP_BIG) || 25000 };
 
@@ -30,7 +44,7 @@ function pickKey(model) {
 
 export const llmEnabled = () => !!KEY;
 export function llmStatus() {
-  return { enabled: !!KEY, keys: KEYS.length, base: BASE.replace(/\/\/([^/]+).*/, '//$1'), small: SMALL, big: BIG,
+  return { enabled: !!KEY, keys: KEYS.length, models: { small: remap[SMALL] || SMALL, big: remap[BIG] || BIG }, base: BASE.replace(/\/\/([^/]+).*/, '//$1'), small: SMALL, big: BIG,
     usedToday: keyState.map((k) => k.used), calls: state.calls, fails: state.fails };
 }
 
@@ -43,6 +57,11 @@ export function canCall(model, viewers) {
 
 async function chat(model, messages, maxTokens = 220, temperature = 0.95, retry = true) {
   const ki = pickKey(model); if (ki < 0) return null;
+  const real = remap[model] || model;
+  // reasoning models (gpt-oss, qwen) think before answering: keep that short and leave room for the reply
+  const reasoning = /gpt-oss|qwen/.test(real);
+  const extra = reasoning ? { reasoning_effort: 'low', max_tokens: maxTokens + 700 } : { max_tokens: maxTokens };
+  if (/qwen/.test(real)) extra.reasoning_format = 'hidden';
   const ks = keyState[ki], key = KEYS[ki];
   state.last[model] = Date.now(); state.inflight++; state.calls++;
   let failover = false;
@@ -51,11 +70,15 @@ async function chat(model, messages, maxTokens = 220, temperature = 0.95, retry 
     const res = await fetch(`${BASE}/chat/completions`, {
       method: 'POST', signal: ctl.signal,
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
-      body: JSON.stringify({ model, messages, max_tokens: maxTokens, temperature, response_format: { type: 'json_object' } }),
+      body: JSON.stringify({ model: real, messages, temperature, response_format: { type: 'json_object' }, ...extra }),
     });
     if (res.status === 429) { ks.disabledUntil = Date.now() + 60000; failover = true; throw new Error(`key ${ki + 1} rate limited`); }
     if (res.status === 401 || res.status === 403) { ks.disabledUntil = Date.now() + 30 * 60000; failover = true; throw new Error(`key ${ki + 1} rejected`); }
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (res.status === 404 && retry) {
+      const alt = await replacementFor(real, key);
+      if (alt) { remap[model] = alt; console.warn(`[llm] ${real} is no longer served; switching to ${alt}`); failover = true; throw new Error('model retired'); }
+    }
+    if (!res.ok) { const body = await res.text().catch(() => ''); throw new Error(`HTTP ${res.status} ${body.slice(0, 200)}`); }
     const j = await res.json();
     ks.used[model] = (ks.used[model] || 0) + (j.usage?.total_tokens || 600);
     const txt = j.choices?.[0]?.message?.content || '';
@@ -65,7 +88,7 @@ async function chat(model, messages, maxTokens = 220, temperature = 0.95, retry 
     if (state.fails % 10 === 1) console.warn('[llm]', e.message);
     if (!failover) return null;
   } finally { clearTimeout(to); state.inflight--; }
-  if (failover && retry && KEYS.length > 1) return chat(model, messages, maxTokens, temperature, false);
+  if (failover && retry && (KEYS.length > 1 || remap[model])) return chat(model, messages, maxTokens, temperature, false);
   return null;
 }
 

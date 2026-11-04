@@ -20,6 +20,7 @@ const BIRTH_GAP_DAYS = Number(process.env.BIRTH_GAP_DAYS) || 20;
 const FERTILITY = Number(process.env.FERTILITY) || 5;          // conception chance multiplier
 const SETTLER_POP = Number(process.env.SETTLER_POP) || 60;      // kingdoms below this size attract settler families
 const SETTLER_SECS = Number(process.env.SETTLER_SECONDS) || 120; // at most one family per kingdom every 7 real minutes
+const FIELD_GROWTH = Number(process.env.FIELD_GROWTH) || 3;     // how fast fields regrow
 const TWINS = Number(process.env.TWINS) || 0.15;
 const N = GRID * GRID;
 const OWN = 128, OCELL = WORLD_SIZE / OWN;
@@ -306,8 +307,8 @@ export class Simulation {
       if (f <= 0) continue;
       const t = w.temp[c] + seas;
       const g = t < 1 ? 0 : t < 10 ? (t - 1) / 9 : t > 31 ? 0.5 : 1;
-      const cap = 3 + f * 12 * (1 + cult[c]);
-      food[c] = Math.min(cap, food[c] + f * this.dynBias[c] * g * (1 + 1.6 * cult[c]) * 0.0048 * mul[c]);
+      const cap = (3 + f * 12 * (1 + cult[c])) * 1.5;
+      food[c] = Math.min(cap, food[c] + f * this.dynBias[c] * g * (1 + 1.6 * cult[c]) * 0.0048 * FIELD_GROWTH * mul[c]);
       if (t < -3) food[c] *= 0.997;            // frost spoils standing crops
       if (cult[c] > 0) cult[c] *= 0.9993;      // untended fields go wild
       if (this.minLeft[c] < w.minerals[c] * 40) this.minLeft[c] += w.minerals[c] * 0.004;
@@ -510,7 +511,7 @@ export class Simulation {
     // so young realms fill up, raise armies and come to blows within hours instead of days
     for (const k of this.kingdoms.values()) {
       if (k.pop >= SETTLER_POP || this.realTime - (k.lastSettlers ?? -SETTLER_SECS * 0.5) < SETTLER_SECS) continue;
-      if (k.food / Math.max(1, k.pop) < 1.5) continue;
+      if (k.food / Math.max(1, k.pop) < 4) continue;
       k.lastSettlers = this.realTime;
       const a = r() * 6.283;
       let x = k.x + Math.cos(a) * 260, z = k.z + Math.sin(a) * 260;
@@ -526,6 +527,7 @@ export class Simulation {
         const c = this.makePerson({ sex: r() < 0.5 ? 'M' : 'F', kingdom: k.id, x: x + 2 + i, z: z + 1, birth: this.time - (3 + r() * 9) * YEAR, nourish: 0.65, motherId: wife.id, fatherId: man.id, gen: 2 }, cul);
         man.children.push(c.id); wife.children.push(c.id); fam.push(c);
       }
+      k.food += fam.length * 25; // they bring their own grain and livestock
       for (const q of fam) { q.house = house; q.task = { type: 'migrate', dest: k.id, t: 0, phase: 0 }; q.thought = `Settling in ${k.name} with the family`; }
       this.event('settlers', `A family of settlers, House ${house} — ${man.name}, ${wife.name}${nk ? ` and ${nk} child${nk > 1 ? 'ren' : ''}` : ''} — comes out of the wilds to make a home in ${k.name}.`, { k: k.id, pid: man.id, x, z });
     }
@@ -1110,7 +1112,7 @@ export class Simulation {
         if (t.phase === 0) { if (go(walk, STATE.WALK)) { t.phase = 1; t.t = 0; } }
         else if (t.phase === 1) {
           p.state = STATE.FARM;
-          const take = Math.min(this.food[t.cell], dt * (1.5 + 0.8 * p.genes.dilig) * (p.ageY < 14 ? 0.5 : 1));
+          const take = Math.min(this.food[t.cell], dt * (1.5 + 0.8 * p.genes.dilig) * 1.6 * (p.ageY < 14 ? 0.5 : 1));
           this.food[t.cell] -= take; p.carry += take; this.cult[t.cell] = Math.min(1, this.cult[t.cell] + dt * 0.003);
           if (p.carry >= 14 || this.food[t.cell] < 0.3 || t.t > 18 || this.mustHeadHome(p, k)) { t.phase = 2; t.tx = k.x + (r() - 0.5) * 20; t.tz = k.z + (r() - 0.5) * 20; p.thought = 'Carrying the harvest home'; }
         } else if (go(walk * 0.9, STATE.WALK)) { k.food += p.carry; k.prod = (k.prod || 0) + p.carry; p.carry = 0; p.task = null; }
@@ -1346,7 +1348,7 @@ export class Simulation {
         continue;
       }
       if (rel.state === 'ally' || this.realTime < rel.truceUntil) continue;
-      if (d > 4200 || k.fighters < 5 || k.army.state !== 'none') continue;
+      if (d > 4200 || k.fighters < 3 || k.army.state !== 'none') continue;
       const fpc = k.food / Math.max(1, k.pop), ofpc = o.food / Math.max(1, o.pop);
       const hunger = fpc < 2 ? 0.45 : 0;
       const envy = clamp((ofpc - fpc) / 10, -0.3, 0.5) + clamp((o.minerals - k.minerals) / 200, -0.2, 0.3);
@@ -1357,8 +1359,8 @@ export class Simulation {
       const ratio = (k.power + myAllies) / (o.power + allyPower * 0.6 + 0.1);
       const tension = rel.tension || 0;
       const desire = g.aggr * 0.9 + g.ambit * 0.5 + envy + hunger + capHate + grudge + tension / 70 + (rel.cb ? 0.35 : 0) - 1.35 - d / 9000 + (r() - 0.5) * 0.4;
-      const need = 1.2 - g.aggr * 0.35 - hunger * 0.3 - capHate * 0.25;
-      if (desire > 0 && ratio > need && (tension > 45 || capHate > 0) && r() < 0.12) { this.declareWar(k, o, rel.cb ? `over ${rel.cb}` : capHate > 0 ? 'to topple the capital' : hunger ? 'for its granaries' : envy > 0.2 ? 'for its rich lands' : 'for glory'); break; }
+      const need = 1.1 - g.aggr * 0.35 - hunger * 0.3 - capHate * 0.25 - Math.max(0, tension - 45) / 150;
+      if (desire > 0 && ratio > need && (tension > 45 || capHate > 0) && r() < 0.2) { this.declareWar(k, o, rel.cb ? `over ${rel.cb}` : capHate > 0 ? 'to topple the capital' : hunger ? 'for its granaries' : envy > 0.2 ? 'for its rich lands' : 'for glory'); break; }
     }
 
     // ----- coalition against the capital
