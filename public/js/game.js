@@ -148,8 +148,8 @@ function skinMat(type) {
 
 // ============================================================== aliens
 const TYPES = {
-  crawler: { hp: 70, speed: 6.4, dmg: 11, reach: 1.5, r: 0.7, score: 100, eye: 0xff3b2b },
-  brute: { hp: 420, speed: 2.7, dmg: 32, reach: 2.4, r: 1.0, score: 400, eye: 0xffd23d },
+  crawler: { hp: 55, speed: 6.0, dmg: 10, reach: 1.5, r: 0.7, score: 100, eye: 0xff3b2b },
+  brute: { hp: 360, speed: 2.7, dmg: 28, reach: 2.4, r: 1.0, score: 400, eye: 0xffd23d },
   spitter: { hp: 120, speed: 3.6, dmg: 13, reach: 0, r: 0.55, score: 200, eye: 0x7dfff0 },
 };
 const aliens = [];
@@ -168,7 +168,7 @@ function eyes(head, n, color, r, spread, z) {
 }
 function buildAlien(type) {
   const T = TYPES[type], mat = skinMat(type), root = new THREE.Group(), body = new THREE.Group(); root.add(body);
-  const a = { type, T, root, body, mat, hp: T.hp, maxHp: T.hp, legs: [], arms: [], hit: [], phase: Math.random() * 10, attackCd: 1, stagger: 0, alive: true, vel: new THREE.Vector3(), spawnT: 0, windup: 0, shootCd: rand(1.5, 3) };
+  const a = { type, T, root, body, mat, hp: T.hp, maxHp: T.hp, legs: [], arms: [], hit: [], phase: Math.random() * 10, attackCd: 1, stagger: 0, alive: true, orbit: Math.random() < 0.5 ? 1 : -1, vel: new THREE.Vector3(), spawnT: 0, windup: 0, shootCd: rand(1.5, 3) };
   if (type === 'crawler') {
     body.position.y = 0.62;
     const thorax = new THREE.Mesh(new THREE.SphereGeometry(0.5, 20, 14), mat); thorax.scale.set(1, 0.62, 1.25); body.add(thorax);
@@ -332,9 +332,9 @@ function updateListener() {
 
 // ============================================================== weapons (viewmodels built from parts)
 const WEAPONS = [
-  { id: 'rifle', name: 'ASSAULT RIFLE', auto: true, rpm: 620, dmg: 24, head: 2.0, mag: 30, reload: 2.1, spread: 0.022, ads: 0.004, recoil: 0.016, kick: 0.05, pellets: 1, push: 1.2 },
-  { id: 'shotgun', name: 'PUMP SHOTGUN', auto: false, rpm: 68, dmg: 17, head: 1.5, mag: 6, reload: 2.7, spread: 0.075, ads: 0.055, recoil: 0.06, kick: 0.14, pellets: 10, push: 0.9, falloff: 14 },
-  { id: 'pistol', name: 'SIDEARM', auto: false, rpm: 420, dmg: 32, head: 2.2, mag: 12, reload: 1.4, spread: 0.012, ads: 0.003, recoil: 0.022, kick: 0.06, pellets: 1, push: 1.4 },
+  { id: 'rifle', name: 'ASSAULT RIFLE', auto: true, rpm: 620, dmg: 32, head: 2.0, mag: 30, reload: 2.1, spread: 0.022, ads: 0.004, recoil: 0.016, kick: 0.05, pellets: 1, push: 1.2 },
+  { id: 'shotgun', name: 'PUMP SHOTGUN', auto: false, rpm: 68, dmg: 22, head: 1.5, mag: 6, reload: 2.7, spread: 0.075, ads: 0.055, recoil: 0.06, kick: 0.14, pellets: 10, push: 0.9, falloff: 14 },
+  { id: 'pistol', name: 'SIDEARM', auto: false, rpm: 420, dmg: 42, head: 2.2, mag: 12, reload: 1.4, spread: 0.012, ads: 0.003, recoil: 0.022, kick: 0.06, pellets: 1, push: 1.4 },
 ];
 const metal = new THREE.MeshStandardMaterial({ color: 0x1b1d26, metalness: 0.85, roughness: 0.32 });
 const polymer = new THREE.MeshStandardMaterial({ color: 0x101117, metalness: 0.2, roughness: 0.75 });
@@ -644,7 +644,7 @@ function raycastWorld(origin, dir, max) {
     if (!a.alive) continue;
     if (a.root.position.distanceTo(origin) > best.dist + 3) continue;
     for (const h of a.hit) {
-      const c = h.o.getWorldPosition(tmpV).clone(); const r = h.r * a.root.scale.x;
+      const c = h.o.getWorldPosition(tmpV).clone(); const r = h.r * a.root.scale.x * 1.3;
       const t = sphereHit(origin, dir, c, r);
       if (t >= 0 && t < best.dist) { const p = origin.clone().addScaledVector(dir, t); best = { dist: t, point: p, normal: p.clone().sub(c).normalize(), alien: a, head: !!h.head, sac: !!h.sac }; }
     }
@@ -655,7 +655,7 @@ function hitMarker(kind) { const h = $('hitmark'); h.className = ''; void h.offs
 
 // ============================================================== alien life & death
 function damageAlien(a, dmg, point, dir, push, head) {
-  a.hp -= dmg; a.stagger = Math.max(a.stagger, a.type === 'brute' ? 0.08 : 0.22);
+  a.hp -= dmg; a.stagger = Math.max(a.stagger, a.type === 'brute' ? 0.12 : 0.3); a.hitFlash = 1;
   ichor.emit(point, dir.clone().multiplyScalar(0.6).add(new THREE.Vector3(0, 0.3, 0)), head ? 26 : 14, head ? 5 : 3.5, 0.7, 0.9);
   SFX.flesh(point, head);
   a.vel.addScaledVector(new THREE.Vector3(dir.x, 0, dir.z).normalize(), push * (a.type === 'brute' ? 0.4 : 1.4));
@@ -678,8 +678,8 @@ function kill(a, dir, head, point) {
   while ($('killfeed').children.length > 5) $('killfeed').lastChild.remove();
 }
 function spawnAlien(type, at, fromPortal) {
-  const a = buildAlien(type); const hpScale = 1 + (game.wave - 1) * 0.09;
-  a.hp = a.maxHp = a.T.hp * hpScale; a.speed = a.T.speed * (1 + Math.min(0.45, (game.wave - 1) * 0.035)) * rand(0.9, 1.1);
+  const a = buildAlien(type); const hpScale = 0.8 + (game.wave - 1) * 0.08;
+  a.hp = a.maxHp = a.T.hp * hpScale; a.speed = a.T.speed * (0.6 + 0.4 * Math.min(1.5, diff())) * rand(0.9, 1.1);
   a.root.position.set(at.x + rand(-1.5, 1.5), fromPortal ? 0 : -2.6, at.z + (fromPortal ? rand(0.5, 2) : rand(-1, 1)));
   a.rising = !fromPortal; a.root.rotation.y = Math.atan2(P.pos.x - at.x, P.pos.z - at.z);
   aliens.push(a); game.alive++;
@@ -708,7 +708,8 @@ function updateAliens(dt) {
     if (a.rising) { R.position.y += dt * 2.2; if (R.position.y >= 0) { R.position.y = 0; a.rising = false; } }
     a.phase += dt;
     const toP = new THREE.Vector3(P.pos.x - R.position.x, 0, P.pos.z - R.position.z), dist = toP.length(); toP.normalize();
-    a.stagger = Math.max(0, a.stagger - dt); a.attackCd -= dt; a.flinch = Math.max(0, (a.flinch || 0) - dt * 5);
+    a.stagger = Math.max(0, a.stagger - dt); a.attackCd -= dt; a.retreat = Math.max(0, (a.retreat || 0) - dt);
+    a.hitFlash = Math.max(0, (a.hitFlash || 0) - dt * 6); a.mat.emissiveIntensity = 1.4 + a.hitFlash * 6; a.flinch = Math.max(0, (a.flinch || 0) - dt * 5);
     let want = toP.clone(), speed = a.speed;
     if (a.type === 'spitter') { // keep range, strafe, spit acid
       if (dist < 11) want.negate(); else if (dist < 18) { want.set(-toP.z, 0, toP.x).multiplyScalar(Math.sin(a.phase * 0.5) > 0 ? 1 : -1); speed *= 0.6; }
@@ -720,11 +721,16 @@ function updateAliens(dt) {
         if (!blocked(from, target)) { const v = target.clone().sub(from); const tFlight = v.length() / 16; v.divideScalar(tFlight); v.y += 4 * tFlight; const m = new THREE.Mesh(acidGeo, acidMat); m.position.copy(from); scene.add(m); acid.push({ m, v, t: 4 }); SFX.spit(from); }
       }
     }
-    if (a.type === 'crawler' && dist < 5 && a.attackCd <= 0 && !a.leap) { a.leap = 0.45; a.vel.addScaledVector(toP, 9); a.vel.y = 3.2; SFX.screech(R.position, 'crawler'); }
+    if (a.type === 'crawler') {
+      if (a.retreat > 0) want.copy(toP).negate();                                   // backing off after a strike
+      else if (dist < 4.5 && a.attackCd > 0) { want.set(-toP.z, 0, toP.x).multiplyScalar(a.orbit).addScaledVector(toP, dist < 3 ? -0.8 : 0.2); } // circle at range
+      if (dist < 5 && a.attackCd <= 0 && !a.leap && !a.retreat) { a.leap = 0.45; a.vel.addScaledVector(toP, 8); a.vel.y = 3; SFX.screech(R.position, 'crawler'); }
+    }
+    if (a.type === 'brute' && a.retreat > 0) { want.copy(toP).negate(); speed *= 0.7; }
     if (a.leap) { a.leap -= dt; if (a.leap <= 0) a.leap = 0; }
     if (a.type === 'brute' && dist < T.reach + 0.6 && a.attackCd <= 0 && !a.windup) { a.windup = 0.55; SFX.screech(R.position, 'brute'); }
-    if (a.windup) { a.windup -= dt; speed *= 0.2; if (a.windup <= 0) { a.windup = 0; a.attackCd = 1.6; if (dist < T.reach + 0.5) { hurt(T.dmg * (1 + (game.wave - 1) * 0.05), R.position); P.vel.addScaledVector(toP, 9); P.vel.y = 3; } } }
-    if (a.type === 'crawler' && dist < T.reach && a.attackCd <= 0) { a.attackCd = 1.1; hurt(T.dmg * (1 + (game.wave - 1) * 0.05), R.position); }
+    if (a.windup) { a.windup -= dt; speed *= 0.2; if (a.windup <= 0) { a.windup = 0; a.attackCd = 2.4 / Math.min(1.5, diff()); a.retreat = 0.9; if (dist < T.reach + 0.5) { hurt(T.dmg * diff(), R.position); P.vel.addScaledVector(toP, 9); P.vel.y = 3; } } }
+    if (a.type === 'crawler' && dist < T.reach && a.attackCd <= 0) { a.attackCd = 2.2 / Math.min(1.6, diff()); a.retreat = 1.1; a.leap = 0; a.vel.addScaledVector(toP, -5); hurt(T.dmg * diff(), R.position); }
     // separation from the pack
     for (const b of aliens) { if (b === a || !b.alive) continue; const dx = R.position.x - b.root.position.x, dz = R.position.z - b.root.position.z, d = Math.hypot(dx, dz), m = T.r + b.T.r; if (d < m && d > 1e-3) { want.x += (dx / d) * (m - d) * 2; want.z += (dz / d) * (m - d) * 2; } }
     want.y = 0; if (want.lengthSq() > 1) want.normalize();
@@ -732,6 +738,10 @@ function updateAliens(dt) {
     a.vel.x += (want.x * moveSpeed - a.vel.x) * Math.min(1, dt * (a.leap ? 0.5 : 6)); a.vel.z += (want.z * moveSpeed - a.vel.z) * Math.min(1, dt * (a.leap ? 0.5 : 6));
     if (!a.rising) { a.vel.y -= 14 * dt; R.position.addScaledVector(a.vel, dt); if (R.position.y < 0) { R.position.y = 0; a.vel.y = 0; } }
     collide(R.position, T.r, R.position.y);
+    { // solid: aliens can't stand inside you
+      const dx = R.position.x - P.pos.x, dz = R.position.z - P.pos.z, d = Math.hypot(dx, dz), m = T.r + 0.6;
+      if (d < m && d > 1e-3) { R.position.x = P.pos.x + (dx / d) * m; R.position.z = P.pos.z + (dz / d) * m; }
+    }
     // face where it's going (or the player when close)
     const face = dist < 8 ? Math.atan2(toP.x, toP.z) : Math.atan2(a.vel.x, a.vel.z);
     R.rotation.y += angDiff(face, R.rotation.y) * Math.min(1, dt * 8);
@@ -752,7 +762,7 @@ function updateAliens(dt) {
     const g = acid[i]; g.t -= dt; g.v.y -= 8 * dt; g.m.position.addScaledVector(g.v, dt);
     const head = P.pos.clone().add(new THREE.Vector3(0, P.height - 0.3, 0));
     let done = false;
-    if (g.m.position.distanceTo(head) < 0.75 || (g.m.position.distanceTo(P.pos.clone().add(new THREE.Vector3(0, 0.8, 0))) < 0.7)) { hurt(TYPES.spitter.dmg * (1 + (game.wave - 1) * 0.05), g.m.position.clone().sub(g.v)); done = true; }
+    if (g.m.position.distanceTo(head) < 0.75 || (g.m.position.distanceTo(P.pos.clone().add(new THREE.Vector3(0, 0.8, 0))) < 0.7)) { hurt(TYPES.spitter.dmg * diff(), g.m.position.clone().sub(g.v)); done = true; }
     else if (g.m.position.y < 0.05 || covers.some((c) => c.box.containsPoint(g.m.position)) || g.t <= 0) { done = true; pool(g.m.position.x, g.m.position.z, 0.8, 0x3dffe0); SFX.splash(g.m.position); }
     if (done) { acidFx.emit(g.m.position, new THREE.Vector3(0, 1, 0), 30, 3, 1, 0.7); scene.remove(g.m); acid.splice(i, 1); }
     else if (Math.random() < 0.5) acidFx.emit(g.m.position, new THREE.Vector3(0, 0, 0), 1, 0.3, 1, 0.4);
@@ -761,22 +771,23 @@ function updateAliens(dt) {
 
 // ============================================================== waves
 const SPAWNS = () => [PORTAL, ...RIFTS];
+const diff = () => clamp(0.4 + (game.wave - 1) * 0.13 + game.t / 900, 0.4, 2.2); // 0.4 = first minute, ~1 by wave 5, keeps climbing
 function startWave() {
-  game.wave++; game.toSpawn = Math.min(70, 5 + game.wave * 3); game.spawnT = 1.5; game.breakT = 0;
+  game.wave++; game.toSpawn = Math.min(70, 3 + Math.floor(game.wave * 2.5)); game.spawnT = 1.5; game.breakT = 0;
   banner(`WAVE ${game.wave}`, game.wave === 1 ? 'They are coming through the gate' : 'They are getting stronger'); SFX.wave();
 }
 function pickType() {
   const w = game.wave, r = Math.random();
-  if (w >= 3 && r < Math.min(0.18, 0.06 + w * 0.012)) return 'brute';
-  if (w >= 2 && r < 0.42) return 'spitter';
+  if (w >= 4 && r < Math.min(0.18, 0.04 + w * 0.012)) return 'brute';
+  if (w >= 3 && r < Math.min(0.4, 0.15 + w * 0.03)) return 'spitter';
   return 'crawler';
 }
 function updateWaves(dt) {
   const living = aliens.filter((a) => a.alive).length;
   if (game.toSpawn > 0) {
     game.spawnT -= dt;
-    if (game.spawnT <= 0 && living < 26) {
-      game.spawnT = Math.max(0.25, 1.1 - game.wave * 0.06);
+    if (game.spawnT <= 0 && living < Math.min(26, 3 + game.wave * 2)) {
+      game.spawnT = Math.max(0.35, 2.2 / diff());
       const sp = SPAWNS(); const i = Math.random() < 0.45 ? 0 : 1 + Math.floor(Math.random() * RIFTS.length);
       spawnAlien(pickType(), sp[i], i === 0); game.toSpawn--;
       if (i > 0) riftMats[i - 1].opacity = 1;
