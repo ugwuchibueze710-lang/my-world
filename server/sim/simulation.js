@@ -14,11 +14,13 @@ const YEAR = HOURS_PER_YEAR;
 const WALL_R = [0, 17, 24, 34, 50];
 const KEEP = [null, [7.3, 4.3, 0], [6.5, 6.5, 3.8], [8.5, 8.5, 4.8], [11.5, 11.5, 4.8]];
 // population pace (tunable on Render without code changes)
-const GROWTH = Number(process.env.GROWTH_RATE) || 10;         // childhood passes 6x faster than the calendar
-const PREG_DAYS = Number(process.env.PREGNANCY_DAYS) || 75;   // world days from conception to birth
-const BIRTH_GAP_DAYS = Number(process.env.BIRTH_GAP_DAYS) || 60;
-const FERTILITY = Number(process.env.FERTILITY) || 2.5;        // conception chance multiplier
-const TWINS = Number(process.env.TWINS) || 0.08;
+const GROWTH = Number(process.env.GROWTH_RATE) || 20;         // childhood passes 6x faster than the calendar
+const PREG_DAYS = Number(process.env.PREGNANCY_DAYS) || 30;   // world days from conception to birth
+const BIRTH_GAP_DAYS = Number(process.env.BIRTH_GAP_DAYS) || 20;
+const FERTILITY = Number(process.env.FERTILITY) || 5;          // conception chance multiplier
+const SETTLER_POP = Number(process.env.SETTLER_POP) || 60;      // kingdoms below this size attract settler families
+const SETTLER_SECS = Number(process.env.SETTLER_SECONDS) || 120; // at most one family per kingdom every 7 real minutes
+const TWINS = Number(process.env.TWINS) || 0.15;
 const N = GRID * GRID;
 const OWN = 128, OCELL = WORLD_SIZE / OWN;
 const PALETTE = ['#c0392b', '#2e6fd8', '#e0a526', '#27ae60', '#8e44ad', '#16a2a2', '#d35400', '#c2185b', '#6d8a16', '#5d4fd1',
@@ -504,6 +506,29 @@ export class Simulation {
       this.event('age', 'The old world is silent. From beyond the sea, new families arrive and a new age begins.', {});
       this.genesis(); return;
     }
+    // settler families: small, fed kingdoms draw wandering families from the wilds (couples with children),
+    // so young realms fill up, raise armies and come to blows within hours instead of days
+    for (const k of this.kingdoms.values()) {
+      if (k.pop >= SETTLER_POP || this.realTime - (k.lastSettlers ?? -SETTLER_SECS * 0.5) < SETTLER_SECS) continue;
+      if (k.food / Math.max(1, k.pop) < 1.5) continue;
+      k.lastSettlers = this.realTime;
+      const a = r() * 6.283;
+      let x = k.x + Math.cos(a) * 260, z = k.z + Math.sin(a) * 260;
+      if (!this.world.isLand(x, z)) { x = k.x + Math.cos(a) * 90; z = k.z + Math.sin(a) * 90; }
+      const cul = new Culture(mulberry32((r() * 1e9) | 0)), house = cul.house();
+      const age1 = 18 + r() * 12, age2 = age1 + (r() - 0.4) * 8;
+      const man = this.makePerson({ sex: 'M', kingdom: k.id, x, z, birth: this.time - age1 * YEAR, nourish: 0.7 }, cul);
+      const wife = this.makePerson({ sex: 'F', kingdom: k.id, x: x + 1, z, birth: this.time - Math.max(17, age2) * YEAR, nourish: 0.7 }, cul);
+      const fam = [man, wife];
+      this.marry(man, wife, true);
+      const nk = r() < 0.5 ? 0 : r() < 0.6 ? 1 : 2;
+      for (let i = 0; i < nk; i++) {
+        const c = this.makePerson({ sex: r() < 0.5 ? 'M' : 'F', kingdom: k.id, x: x + 2 + i, z: z + 1, birth: this.time - (3 + r() * 9) * YEAR, nourish: 0.65, motherId: wife.id, fatherId: man.id, gen: 2 }, cul);
+        man.children.push(c.id); wife.children.push(c.id); fam.push(c);
+      }
+      for (const q of fam) { q.house = house; q.task = { type: 'migrate', dest: k.id, t: 0, phase: 0 }; q.thought = `Settling in ${k.name} with the family`; }
+      this.event('settlers', `A family of settlers, House ${house} — ${man.name}, ${wife.name}${nk ? ` and ${nk} child${nk > 1 ? 'ren' : ''}` : ''} — comes out of the wilds to make a home in ${k.name}.`, { k: k.id, pid: man.id, x, z });
+    }
     // travellers from beyond the sea occasionally settle where people are lonely
     for (const k of this.kingdoms.values()) {
       const lonely = [...k.members].map((id) => this.byId.get(id)).find((p) => p && p.lonely >= 3 && !p.spouseId && p.ageY < 40);
@@ -670,9 +695,15 @@ export class Simulation {
       p.thought = ma ? `Toddling about near ${m.name}` : 'A little orphan, looked after by the village';
       return;
     }
-    // ---- babies are carried by their mothers
+    // ---- babies are carried by their mothers, and sleep beside her in bed
     if (p.ageY < 1) {
       const m = this.byId.get(p.motherId);
+      if (m && m.alive && m.task?.type === 'sleep' && m.task.phase === 1) {
+        const th = m.task.rot || m.heading || 0;
+        p.x = m.x + Math.sin(th) * 0.35; p.z = m.z + Math.cos(th) * 0.35; p.heading = th; p.state = STATE.REST; p.indoors = true;
+        p.task = { type: 'sleep', phase: 1, t: 0, rot: th }; p.thought = 'Asleep beside mother'; return;
+      }
+      if (p.task?.type === 'sleep') { p.task = null; p.indoors = false; }
       const hx = m && m.alive ? m.x : k.x, hz = m && m.alive ? m.z : k.z;
       p.x += (hx + 0.6 - p.x) * Math.min(1, dt * 4); p.z += (hz + 0.4 - p.z) * Math.min(1, dt * 4);
       p.state = m && m.alive ? (m.state === STATE.REST ? STATE.REST : STATE.WALK) : STATE.IDLE;
