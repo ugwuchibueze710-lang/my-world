@@ -12,6 +12,12 @@ import { tensionTick, diplomacyTick, storyteller } from './diplomacy.js';
 const YEAR = HOURS_PER_YEAR;
 // curtain-wall half size (tier 1: palisade radius) and keep half-extents [x, z, corner tower radius], matching buildings.js
 const WALL_R = [0, 17, 24, 34, 50];
+// castle outbuildings / towers in castle-local space: [x, z, halfX (or radius), halfZ, round] (match buildings.js)
+const OUTBUILD = [[], [],
+  [[-12, 10, 4.7, 3.2], [13, -11, 3.7, 3.2]],
+  [[34, 34, 5.8, 0, 1], [-34, 34, 5.8, 0, 1], [34, -34, 5.8, 0, 1], [-34, -34, 5.8, 0, 1], [-9, 36, 4.2, 3.2], [9, 36, 4.2, 3.2]],
+  [[50, 50, 5.8, 0, 1], [-50, 50, 5.8, 0, 1], [50, -50, 5.8, 0, 1], [-50, -50, 5.8, 0, 1], [-9, 52, 4.2, 3.2], [9, 52, 4.2, 3.2],
+    [0, -50, 5.2, 0, 1], [50, 0, 5.2, 0, 1], [-50, 0, 5.2, 0, 1], [-27.5, -20, 7.2, 4.7], [25, -25, 6.2, 4.2], [25, 22.5, 5.2, 5.2]]];
 const KEEP = [null, [7.3, 4.3, 0], [6.5, 6.5, 3.8], [8.5, 8.5, 4.8], [11.5, 11.5, 4.8]];
 // population pace (tunable on Render without code changes)
 const GROWTH = Number(process.env.GROWTH_RATE) || 20;         // childhood passes 6x faster than the calendar
@@ -753,8 +759,9 @@ export class Simulation {
         if (d < 1e-4) { const a = (p.id * 2.399) % 6.283; dx = Math.cos(a); dz = Math.sin(a); d = 1; } else { dx /= d; dz /= d; }
         const push = (R - Math.min(d, R)) * 0.5;
         const nx = p.x + dx * push, nz = p.z + dz * push, mx = q.x - dx * push, mz = q.z - dz * push;
-        if (this.walkable(nx, nz)) { p.x = nx; p.z = nz; }
-        if (this.walkable(mx, mz)) { q.x = mx; q.z = mz; }
+        // a shove never pushes anyone through a wall
+        if (this.walkable(nx, nz) && !this.blocked(p.x, p.z, nx, nz, nx, nz)) { p.x = nx; p.z = nz; }
+        if (this.walkable(mx, mz) && !this.blocked(q.x, q.z, mx, mz, mx, mz)) { q.x = mx; q.z = mz; }
       });
     }
   }
@@ -1051,8 +1058,41 @@ export class Simulation {
   // Shapes match the client's geometry (buildings.js) so nobody walks through a wall.
   toLocal(k, x, z) { const c = Math.cos(k.rot || 0), s = Math.sin(k.rot || 0), dx = x - k.x, dz = z - k.z; return [dx * c - dz * s, dx * s + dz * c]; }
   insideWalls(k, lx, lz) { const R = WALL_R[k.tier] || 0; if (!R) return false; return k.tier === 1 ? Math.hypot(lx, lz) < R : Math.abs(lx) < R && Math.abs(lz) < R; }
+  // ---- houses: a 6 x 5 m box (scaled per house, like the client) with one door in the middle of the front (+z) wall
+  houseShape(h) {
+    if (h._shape) return h._shape;
+    const hash = Math.abs(Math.sin(h[0] * 12.9898 + h[1] * 78.233) * 43758.5453) % 1;
+    const sx = 0.85 + hash * 0.45, sz = 0.85 + ((hash * 7) % 1) * 0.4;
+    const th = (h[2] || 0) + Math.PI / 2;
+    const shape = { c: Math.cos(th), s: Math.sin(th), HX: 3 * sx, HZ: 2.5 * sz };
+    Object.defineProperty(h, '_shape', { value: shape, enumerable: false }); // not saved, not sent
+    return shape;
+  }
+  houseLocal(h, x, z) { const S = this.houseShape(h), dx = x - h[0], dz = z - h[1]; return [dx * S.c - dz * S.s, dx * S.s + dz * S.c]; }
+  houseWorld(h, lx, lz) { const S = this.houseShape(h); return [h[0] + lx * S.c + lz * S.s, h[1] - lx * S.s + lz * S.c]; }
+  inHouse(h, x, z) { const S = this.houseShape(h), [lx, lz] = this.houseLocal(h, x, z); return Math.abs(lx) < S.HX && Math.abs(lz) < S.HZ; }
+  houseAt(x, z) {
+    for (const k of this.kingdoms.values()) {
+      if (Math.abs(x - k.x) > 400 || Math.abs(z - k.z) > 400) continue;
+      for (const h of k.houses) if (Math.abs(h[0] - x) < 4 && Math.abs(h[1] - z) < 4 && this.inHouse(h, x, z)) return h;
+    }
+    return null;
+  }
   // through the gate: if the target is on the other side of the curtain wall, walk to the gate first
   route(p, tx, tz) {
+    // in and out of houses only by the front door
+    const hp = this.houseAt(p.x, p.z), ht = this.houseAt(tx, tz);
+    if (hp !== ht) {
+      const h = hp || ht, S = this.houseShape(h);
+      const [lx, lz] = this.houseLocal(h, p.x, p.z);
+      if (hp) { // leaving: to the doorway from inside, then step out
+        if (Math.abs(lx) < 0.45 && lz > S.HZ - 0.9) return this.houseWorld(h, 0, S.HZ + 1.2);
+        return this.houseWorld(h, 0, S.HZ - 0.6);
+      }
+      // entering: to the doorstep outside, then step in
+      if (Math.abs(lx) < 0.45 && lz > S.HZ && lz < S.HZ + 1.6) return this.houseWorld(h, 0, S.HZ - 1.0);
+      if (Math.hypot(p.x - h[0], p.z - h[1]) < 12) return this.houseWorld(h, 0, S.HZ + 1.0);
+    }
     const k = this.kingdoms.get(p.kingdom) || this.nearKingdom(p.x, p.z);
     for (const kk of k ? [k] : []) {
       const R = WALL_R[kk.tier]; if (!R) continue;
@@ -1094,13 +1134,21 @@ export class Simulation {
       const [hx, hz, cr] = KEEP[k.tier] || KEEP[1];
       const inKeep = (lx, lz) => (Math.abs(lx) < hx && Math.abs(lz) < hz) || (cr && Math.abs(Math.abs(lx) - hx) < cr && Math.abs(Math.abs(lz) - hz) < cr);
       if (inKeep(bx, bz) && !inKeep(ax, az)) return true;
-      // houses: solid unless this is the house you are heading into (to sleep or rest)
+      // castle outbuildings and towers
+      for (const [cx, cz, hx, hz, round] of OUTBUILD[k.tier] || []) {
+        const ix = bx - cx, iz = bz - cz, ox = ax - cx, oz = az - cz;
+        const inside = round ? (u, v) => u * u + v * v < hx * hx : (u, v) => Math.abs(u) < hx && Math.abs(v) < hz;
+        if (inside(ix, iz) && !inside(ox, oz)) return true;
+      }
+      // houses: walls everywhere except the front door
       for (const h of k.houses) {
-        const ddx = x1 - h[0], ddz = z1 - h[1];
-        if (ddx * ddx + ddz * ddz > 12) continue;
-        if (Math.hypot(tx - h[0], tz - h[1]) < 3.6) continue;
-        if (Math.hypot(x0 - h[0], z0 - h[1]) < Math.sqrt(ddx * ddx + ddz * ddz)) continue; // already inside: let them out
-        return true;
+        if (Math.abs(x1 - h[0]) > 4.5 || Math.abs(z1 - h[1]) > 4.5) continue;
+        const S = this.houseShape(h);
+        const [l0x, l0z] = this.houseLocal(h, x0, z0), [l1x, l1z] = this.houseLocal(h, x1, z1);
+        const in0 = Math.abs(l0x) < S.HX && Math.abs(l0z) < S.HZ, in1 = Math.abs(l1x) < S.HX && Math.abs(l1z) < S.HZ;
+        if (in0 === in1) continue;
+        const door = Math.abs(in1 ? l1x : l0x) < 0.55 && (in1 ? l0z : l1z) >= S.HZ - 0.05;
+        if (!door) return true;
       }
     }
     return false;
