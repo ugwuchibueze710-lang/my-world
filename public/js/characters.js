@@ -380,7 +380,7 @@ export class Characters {
   animFor(ag, speed) {
     const st = ag.st, role = (ag.fl >> 3) & 7, soldier = role === 1 || role === 5;
     const talking = ag.ex & 32;
-    if (((ag.fl >> 1) & 3) === 0) return ['Idle_Loop', 1];
+    if (((ag.fl >> 1) & 3) === 0 && ag.age < 1) return ['Idle_Loop', 0.6]; // carried
     if ((ag.ex & 128) && !ag.mv) return [ag.mouthUntil > this._now ? 'Sitting_Talking_Loop' : 'Sitting_Idle_Loop', 1]; // on the throne
     if ((ag.ex & 64) && st === STATE.REST) return ['Idle_Loop', 0.25]; // asleep in bed
     if ((ag.ex & 1) && !ag.mv) return ['Death01', 1]; // sick: lying down
@@ -478,7 +478,7 @@ export class Characters {
         s.root.rotation.set(-Math.PI / 2, ag.sh + Math.PI / 2, 0, 'YXZ');
         s.root.scale.set(...s.scale);
       } else {
-      if (((ag.fl >> 1) & 3) === 0) { s.root.position.x += Math.cos(ag.hd) * 0.25; s.root.position.y += 0.7; }
+      if (ag.age < 1) s.root.position.y += 0.95; // a babe in arms, held at the mother's chest (toddlers walk on the ground)
       if ((ag.ex & 128) && !ag.mv) { s.root.position.y += THRONE.seatY; s.root.position.x -= Math.sin(ag.hd) * THRONE.back; s.root.position.z -= Math.cos(ag.hd) * THRONE.back; }
       s.root.rotation.set(0, ag.hd, 0, 'XYZ');
       s.root.scale.set(...s.scale);

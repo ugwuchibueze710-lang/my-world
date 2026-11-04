@@ -218,6 +218,7 @@ export class Simulation {
     this.spatial.rebuild(this.people);
     const ppl = this.people;
     for (let i = 0; i < ppl.length; i++) if (ppl[i].alive) this.updatePerson(ppl[i], dt);
+    this.separate();
     if (this._dead) { this.people = this.people.filter((p) => p.alive); this._dead = 0; }
     for (const k of this.kingdoms.values()) {
       k.thinkT -= dt;
@@ -233,7 +234,7 @@ export class Simulation {
     this.updateKingdomStats();
     this.stormDamage();
     this.diseaseSpread();
-    if (this.seconds % 4 === 0) this.society();
+    if (this.seconds % 4 === 0) { this.society(); this.captiveTick(); }
     if (this.seconds % 2 === 0) maybeTalk(this);
     if (this.seconds % 10 === 0) { tensionTick(this); diplomacyTick(this); }
     if (this.seconds % 15 === 7) plotTick(this);
@@ -737,7 +738,59 @@ export class Simulation {
     this.act(p, k, dt, e);
   }
 
+  // bodies are solid: anyone standing closer than shoulder-width is pushed apart (sleepers and carried babies excepted)
+  separate() {
+    const R = 0.62;
+    const loose = (p) => !p.alive || p.ageY < 1 || (p.task?.type === 'sleep' && p.task.phase === 1) || (p.task?.type === 'throne' && p.task.phase === 1);
+    for (const p of this.people) {
+      if (loose(p)) continue;
+      this.spatial.query(p.x, p.z, R, (q) => {
+        if (q === p || q.id < p.id || loose(q)) return;
+        let dx = p.x - q.x, dz = p.z - q.z, d = Math.hypot(dx, dz);
+        if (d >= R) return;
+        if (d < 1e-4) { const a = (p.id * 2.399) % 6.283; dx = Math.cos(a); dz = Math.sin(a); d = 1; } else { dx /= d; dz /= d; }
+        const push = (R - Math.min(d, R)) * 0.5;
+        const nx = p.x + dx * push, nz = p.z + dz * push, mx = q.x - dx * push, mz = q.z - dz * push;
+        if (this.walkable(nx, nz)) { p.x = nx; p.z = nz; }
+        if (this.walkable(mx, mz)) { q.x = mx; q.z = mz; }
+      });
+    }
+  }
+
+  capture(p, q) {
+    const pk = this.kingdoms.get(p.kingdom), qk = this.kingdoms.get(q.kingdom);
+    if (!pk) return;
+    q.health = Math.max(q.health, 12);
+    q.soldier = false; if (q.role === ROLE.SOLDIER || q.role === ROLE.GENERAL) q.role = ROLE.COMMONER;
+    if (qk) { qk.soldiers = Math.max(0, (qk.soldiers || 0) - 1); qk.relOf(pk.id).captured = (qk.relOf(pk.id).captured || 0) + 1; }
+    this.transfer(q, pk.id);
+    q.captive = { from: qk ? qk.id : 0, fromName: qk ? qk.name : 'the wilds', by: p.id, until: this.realTime + 900 };
+    q.loyalty = 0.08;
+    q.task = { type: 'captive', by: p.id, t: 0 }; q.thinkT = 999;
+    q.thought = `Taken captive by ${p.name} of ${pk.name}`;
+    p.task = null; p.thinkT = 0;
+    if (q.ops && p.ops) { q.ops[p.id] = -60; }
+    this.stats.captives = (this.stats.captives || 0) + 1;
+    this.event('captive', `${this.fullName(q)} of ${q.captive.fromName} throws down ${q.sex === 'F' ? 'her' : 'his'} sword and is taken captive by ${p.name} of ${pk.name}.`, { k: pk.id, k2: qk?.id, x: q.x, z: q.z, pid: q.id });
+  }
+  // captives: dragged home behind their captors; later they escape, are ransomed by fate, or swear fealty
+  captiveTick() {
+    for (const q of this.people) {
+      if (!q.alive || !q.captive) continue;
+      const c = q.captive, home = this.kingdoms.get(c.from);
+      if (home && this.rand() < 0.0025 * (0.5 + q.genes.courage)) {
+        this.transfer(q, home.id); q.captive = null; q.task = null; q.thinkT = 0; q.loyalty = 0.8;
+        this.event('escape', `${this.fullName(q)} escapes captivity and flees home to ${home.name}!`, { k: home.id, x: q.x, z: q.z, pid: q.id });
+      } else if (this.realTime > c.until) {
+        q.captive = null; q.loyalty = 0.45; if (q.task?.type === 'captive') q.task = null;
+        const k = this.kingdoms.get(q.kingdom);
+        this.event('fealty', `After long captivity, ${this.fullName(q)} kneels and swears fealty to ${k ? k.name : 'their captors'}.`, { k: q.kingdom, pid: q.id, minor: !k });
+      }
+    }
+  }
+
   isCombatant(q) {
+    if (q.captive) return false;
     return q.soldier || q.task?.type === 'defend' || q.task?.type === 'fight' || (q.sex === 'M' && q.ageY >= 16 && q.ageY < 60);
   }
   atWar(a, b) {
@@ -746,12 +799,12 @@ export class Simulation {
     const r = k.rel.get(b); return !!r && r.state === 'war';
   }
 
-  combatScan(p, k) {
-    if (p.ageY < 14 || p.task?.type === 'fight') return;
+  combatScan(p, k, reach) {
+    if (p.ageY < 14 || p.task?.type === 'fight' || p.captive) return;
     let foe = null, fd = 1e9;
-    const R = p.soldier || p.task?.type === 'defend' ? 32 : 18;
+    const R = reach || (p.soldier || p.task?.type === 'defend' ? 32 : 18);
     this.spatial.query(p.x, p.z, R, (q, d2) => {
-      if (q.kingdom === p.kingdom || q.ageY < 14 || !this.atWar(p.kingdom, q.kingdom)) return;
+      if (q.kingdom === p.kingdom || q.ageY < 14 || q.captive || !this.atWar(p.kingdom, q.kingdom)) return;
       if (!this.isCombatant(q) && !(p.soldier && q.sex === 'M')) return;
       if (d2 < fd) { fd = d2; foe = q; }
     });
@@ -766,7 +819,7 @@ export class Simulation {
     p.thinkT = 2.5 + r() * 3;
     const critical = p.satiety < 0.2 || p.hydration < 0.2;
     const tt = p.task?.type;
-    if (tt === 'fight' || tt === 'brawl' || tt === 'vendetta' || (tt === 'flee' && p.task.t < 8)) return;
+    if (tt === 'fight' || tt === 'brawl' || tt === 'vendetta' || tt === 'captive' || (tt === 'flee' && p.task.t < 8)) return;
     // daily rhythm: home by dusk, asleep in bed at night (soldiers on campaign excepted)
     const onDuty = (p.soldier && k.army.state !== 'none') || tt === 'defend' || tt === 'migrate' || k.defense;
     if (!onDuty) {
@@ -1168,6 +1221,22 @@ export class Simulation {
         if (t.t > 60) p.task = null;
         break;
       }
+      case 'captive': {
+        const cap = this.byId.get(t.by);
+        p.state = STATE.WALK;
+        if (cap && cap.alive && cap.soldier && cap.kingdom === p.kingdom) {
+          const d = Math.hypot(cap.x - p.x, cap.z - p.z);
+          if (d > 2.2) this.moveTo(p, cap.x - Math.sin(cap.heading || 0) * 1.6, cap.z - Math.cos(cap.heading || 0) * 1.6, d > 12 ? run * 0.8 : walk * 1.1, dt);
+          else p.state = STATE.IDLE;
+          p.thought = `A captive, marched along behind ${cap.name}`;
+        } else {
+          const [hx, hz] = this.homeOf(p, k);
+          if (this.moveTo(p, hx, hz, walk, dt)) { p.task = null; p.thinkT = 5; p.thought = `A prisoner in ${k.name}, far from home`; }
+        }
+        if (p.satiety < 0.3 && k.food >= 1) { k.food -= 1; p.satiety = 0.8; }
+        if (p.hydration < 0.3) p.hydration = 0.8;
+        break;
+      }
       case 'march': {
         const a = k.army;
         if (a.state === 'none' || !p.soldier) { p.task = null; break; }
@@ -1176,7 +1245,8 @@ export class Simulation {
         const ang = (p.id * 2.399) % 6.283, rad = 3 + ((p.id * 7) % 11) * Math.sqrt(Math.max(1, k.soldiers)) * 0.35;
         t.tx = a.fx + Math.cos(ang) * rad; t.tz = a.fz + Math.sin(ang) * rad;
         const far = Math.hypot(t.tx - p.x, t.tz - p.z) > 60;
-        if (go(far ? run * 0.85 : walk * 1.15, STATE.MARCH)) p.state = a.state === 'siege' ? STATE.FIGHT : STATE.IDLE;
+        if (go(far ? run * 0.85 : walk * 1.15, STATE.MARCH)) p.state = a.state === 'siege' || a.state === 'battle' ? STATE.FIGHT : STATE.IDLE;
+        if (a.state === 'battle') { p.heading = Math.atan2(a.bx - p.x, a.bz - p.z); if (k.atWar) this.combatScan(p, k, 60); }
         break;
       }
       case 'defend':
@@ -1201,6 +1271,8 @@ export class Simulation {
               q.health -= (8 + r() * 14) * sp / (0.6 + 0.4 * sq);
               q.lastCause = `was slain in battle by ${this.fullName(p)} of ${k.name}`; q.lastKiller = p.id;
               if (q.task?.type !== 'fight' && q.health > 20 && this.isCombatant(q)) q.task = { type: 'fight', target: p.id, t: 0 };
+              // a beaten soldier may throw down his sword rather than die
+              if (q.health <= 15 && !q.captive && q.health > -12 && r() < 0.5 * (1.25 - q.genes.courage)) { this.capture(p, q); break; }
               if (q.health <= 0) {
                 p.kills++; k.kills++;
                 const qk = this.kingdoms.get(q.kingdom);
@@ -1410,6 +1482,7 @@ export class Simulation {
     k.history.push(`Year ${calendar(this.time).year}: declared war on ${o.name}.`);
     o.history.push(`Year ${calendar(this.time).year}: ${k.name} declared war on us.`);
     this.muster(k, o);
+    this.muster(o, k); // the defender raises its banners and marches out to meet the invader
     // allies are called to arms (each decides freely)
     for (const side of [k, o]) {
       const enemy = side === k ? o : k;
@@ -1495,6 +1568,16 @@ export class Simulation {
       case 'muster': if (a.t > 25) { a.state = 'march'; this.event('march', `The army of ${k.name} marches on ${target?.name}.`, { k: k.id, k2: target?.id, x: a.fx, z: a.fz }); } break;
       case 'march': {
         if (!target) break;
+        // two armies on the move find each other: they halt and give battle in the field
+        const ea = target.army;
+        if (ea && (ea.state === 'march' || ea.state === 'muster' || ea.state === 'defend') && ea.target === k.id && Math.hypot(ea.fx - a.fx, ea.fz - a.fz) < 160) {
+          const bx = (a.fx + ea.fx) / 2, bz = (a.fz + ea.fz) / 2;
+          for (const [x, y] of [[a, ea], [ea, a]]) { x.state = 'battle'; x.bx = bx; x.bz = bz; x.bt = 0; }
+          const place = this.world.isLand(bx, bz) ? 'in the open field' : 'at the water\'s edge';
+          this.event('battle', `The armies of ${k.name} and ${target.name} meet ${place}. Battle is joined!`, { k: k.id, k2: target.id, x: bx, z: bz,
+            narr: `Steel against steel. Every soldier here chose to come, and every one of them wants to go home. Not all of them will.` });
+          break;
+        }
         const d = step(target.x, target.z, 2.6);
         if (d < 90) { a.state = 'siege'; this.event('siege', `${k.name} lays siege to ${target.name}!`, { k: k.id, k2: target.id, x: target.x, z: target.z }); }
         break;
@@ -1510,6 +1593,30 @@ export class Simulation {
         if (attackers >= 3 && defenders === 0) target.siege = (target.siege || 0) + dt * Math.min(attackers, 20) * 0.35;
         else target.siege = Math.max(0, (target.siege || 0) - dt * 0.5);
         if (target.siege >= 60) this.conquer(k, target);
+        break;
+      }
+      case 'battle': {
+        a.bt = (a.bt || 0) + dt;
+        // both fronts close on the battlefield
+        step(a.bx, a.bz, 2);
+        let mine = 0, theirs = 0;
+        this.spatial.query(a.bx, a.bz, 150, (q) => {
+          if (!q.soldier || q.health <= 15) return;
+          if (q.kingdom === k.id) mine++; else if (target && q.kingdom === target.id) theirs++;
+        });
+        const ea = target?.army;
+        if (!target || !ea || ea.state !== 'battle') {
+          // the enemy broke: march on their capital
+          a.state = target && this.atWar(k.id, target.id) ? 'march' : 'return';
+          break;
+        }
+        if (a.bt > 12 && (mine === 0 || (mine <= theirs * 0.4 && a.bt > 25))) {
+          a.state = 'return';
+          ea.state = 'march';
+          this.event('rout', `${k.name}'s army breaks and flees the field! ${target.name} is victorious and marches on.`, { k: target.id, k2: k.id, x: a.bx, z: a.bz,
+            narr: `The line breaks. Men who swore to die for ${k.name} are running for their lives. And ${target.name} smells blood.` });
+          for (const id of k.members) { const q = this.byId.get(id); if (q && q.soldier && q.task?.type === 'fight') { q.task = null; q.thinkT = 0; } }
+        } else if (a.bt > 300) { a.state = 'return'; ea.state = 'return'; this.event('battle', `Neither ${k.name} nor ${target.name} can win the field. Both armies withdraw, bloodied.`, { k: k.id, k2: target.id, x: a.bx, z: a.bz }); }
         break;
       }
       case 'defend': { step(k.x, k.z, 3.5); break; }
