@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Neon Hive</title>
+  <title>Neon Siege</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css">
@@ -11,39 +11,62 @@
 </head>
 <body>
   <div id="scene"></div>
+  <div id="hurt"></div>
+  <div id="dirs"></div>
 
-  <header id="hud">
-    <div class="brand">NEON<span>HIVE</span></div>
-    <div class="stats">
-      <div><b id="s-level">1</b><small>LEVEL</small></div>
-      <div><b id="s-minds">1</b><small>MINDS</small></div>
-      <div><b id="s-solved">0</b><small>SOLVED</small></div>
-      <div><b id="s-failed">0</b><small>FAILED</small></div>
-      <div><b id="s-assists">0</b><small>YOUR ASSISTS</small></div>
+  <div id="hud" class="hidden">
+    <div id="top">
+      <div><b id="h-wave">1</b><small>WAVE</small></div>
+      <div><b id="h-time">0:00</b><small>SURVIVED</small></div>
+      <div><b id="h-kills">0</b><small>KILLS</small></div>
+      <div><b id="h-left">0</b><small>ALIENS LEFT</small></div>
     </div>
-    <div id="mode"></div>
-  </header>
+    <div id="banner"></div>
+    <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i><span id="hitmark"></span></div>
+    <div id="health"><div class="label">HEALTH</div><div class="bar"><div id="h-hp"></div></div><b id="h-hpn">100</b></div>
+    <div id="ammo"><div id="h-weapon">ASSAULT RIFLE</div><div><b id="h-mag">30</b><span id="h-res">/ ∞</span></div><div id="h-reload"></div></div>
+    <ul id="killfeed"></ul>
+    <div id="pad-tag"></div>
+  </div>
 
-  <section id="puzzle">
-    <div class="p-head"><span id="p-level">LEVEL 1</span><span id="p-title">—</span></div>
-    <pre id="p-prompt">Connecting to the hive…</pre>
-    <div id="p-hint"></div>
-    <div id="p-answer"></div>
-    <div class="timer"><div id="p-timer"></div></div>
-    <div id="p-tried"></div>
-  </section>
+  <div id="menu">
+    <div class="card">
+      <h1>NEON<span>SIEGE</span></h1>
+      <p class="tag">They come through the gate. Survive as long as you can.</p>
+      <label class="name">CALLSIGN <input id="name" maxlength="16" placeholder="Player"></label>
+      <button id="play">PLAY</button>
+      <p id="pad-status">Mouse &amp; keyboard ready · plug in a PS5 controller and press any button</p>
+      <div class="controls">
+        <div><h3>PS5 CONTROLLER</h3><p class="sub">Fortnite default layout</p>
+          <table>
+            <tr><td>R2</td><td>Fire</td></tr><tr><td>L2</td><td>Aim down sights</td></tr>
+            <tr><td>Left stick / L3</td><td>Move / Sprint</td></tr><tr><td>Right stick</td><td>Look</td></tr>
+            <tr><td>✕</td><td>Jump</td></tr><tr><td>○ / R3</td><td>Crouch · slide</td></tr>
+            <tr><td>□</td><td>Reload</td></tr><tr><td>△ · R1 / L1</td><td>Next / previous weapon</td></tr>
+            <tr><td>Options</td><td>Pause</td></tr>
+          </table></div>
+        <div><h3>KEYBOARD &amp; MOUSE</h3><p class="sub">click to lock the mouse</p>
+          <table>
+            <tr><td>Left click</td><td>Fire</td></tr><tr><td>Right click</td><td>Aim down sights</td></tr>
+            <tr><td>WASD / Shift</td><td>Move / Sprint</td></tr><tr><td>Space</td><td>Jump</td></tr>
+            <tr><td>C / Ctrl</td><td>Crouch · slide</td></tr><tr><td>R</td><td>Reload</td></tr>
+            <tr><td>1 2 3 · wheel</td><td>Weapons</td></tr><tr><td>Esc</td><td>Pause</td></tr>
+          </table></div>
+      </div>
+      <div id="board"></div>
+    </div>
+  </div>
 
-  <aside id="feed"><h3>HIVE LOG</h3><ul id="feed-list"></ul></aside>
+  <div id="over" class="hidden">
+    <div class="card">
+      <h1 class="dead">YOU DIED</h1>
+      <div class="final"><div><b id="o-time">0:00</b><small>SURVIVED</small></div><div><b id="o-wave">1</b><small>WAVE</small></div><div><b id="o-kills">0</b><small>KILLS</small></div><div><b id="o-hs">0</b><small>HEADSHOTS</small></div></div>
+      <p id="o-rank"></p>
+      <button id="again">PLAY AGAIN <small>(✕ / Enter)</small></button>
+      <div id="o-board"></div>
+    </div>
+  </div>
 
-  <form id="help" autocomplete="off">
-    <label for="help-input">HELP THE HIVE</label>
-    <input id="help-input" maxlength="80" placeholder="Know the answer? Type it here…">
-    <button type="submit">TRANSMIT</button>
-    <div id="help-result"></div>
-  </form>
-
-  <div id="splash"><div><h1>NEON<span>HIVE</span></h1><p>One AI. Every puzzle it solves, it copies itself.<br>The puzzles get harder. The hive gets bigger.</p><button id="enter">ENTER</button></div></div>
-
-  <script type="module" src="/js/app.js"></script>
+  <script type="module" src="/js/game.js"></script>
 </body>
 </html>

@@ -1,50 +1,31 @@
-// Neon Hive server: runs the hive, streams its state to every viewer, and takes the player's answers.
+// Neon Siege server: serves the game and keeps the global survival leaderboard.
 import express from 'express';
-import http from 'http';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { WebSocketServer } from 'ws';
-import { Hive } from './hive.js';
 import { createStore } from './store.js';
-import { aiStatus } from './llm.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = process.env.PORT || 3000;
 const store = await createStore();
-const saved = process.env.FRESH_HIVE === '1' ? null : await store.load();
-const hive = new Hive(saved);
-console.log(`[hive] ${saved ? `resumed at level ${hive.level} with ${hive.agents.length} minds` : 'a single mind awakens'} (saves: ${store.kind})`);
+let board = (await store.load())?.board || [];
 
 const app = express();
+app.use(express.json({ limit: '4kb' }));
 app.use('/vendor/three', express.static(path.join(ROOT, 'node_modules/three'), { maxAge: '7d' }));
 app.use(express.static(path.join(ROOT, 'public'), { etag: true, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
-app.get('/healthz', (req, res) => res.json({ ok: true, level: hive.level, minds: hive.agents.length, stats: hive.stats, viewers: hive.viewers, saves: store.kind, ai: aiStatus() }));
-const server = http.createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws' });
-
-let lastEvent = 0;
-wss.on('connection', (ws) => {
-  ws.send(JSON.stringify({ ...hive.view(0), full: true }));
-  let lastAns = 0;
-  ws.on('message', (raw) => {
-    let m; try { m = JSON.parse(raw); } catch { return; }
-    if (m.t === 'answer' && typeof m.text === 'string' && m.text.trim()) {
-      if (Date.now() - lastAns < 1500) return; lastAns = Date.now(); // no spamming
-      const r = hive.playerAnswer(m.text.trim().slice(0, 80), String(m.name || 'Player').replace(/[^\w -]/g, '').slice(0, 16) || 'Player');
-      ws.send(JSON.stringify({ t: 'answerResult', ...r }));
-    }
-  });
+app.get('/healthz', (req, res) => res.json({ ok: true, scores: board.length, saves: store.kind }));
+app.get('/api/scores', (req, res) => res.json(board.slice(0, 10)));
+const last = new Map();
+app.post('/api/score', (req, res) => {
+  const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  if (Date.now() - (last.get(ip) || 0) < 5000) return res.status(429).json({ error: 'slow down' });
+  last.set(ip, Date.now());
+  const { name, time, kills, wave, headshots } = req.body || {};
+  const t = Number(time), k = Number(kills), w = Number(wave);
+  if (!(t > 0 && t < 36000 && k >= 0 && k < 100000 && w >= 1 && w < 1000)) return res.status(400).json({ error: 'bad score' });
+  const entry = { name: String(name || 'Player').replace(/[^\w .-]/g, '').slice(0, 16) || 'Player', time: Math.round(t * 10) / 10, kills: k | 0, wave: w | 0, headshots: Number(headshots) | 0, at: Date.now() };
+  board.push(entry); board.sort((a, b) => b.time - a.time || b.kills - a.kills); board = board.slice(0, 50);
+  store.save({ board });
+  res.json({ rank: board.indexOf(entry) + 1, top: board.slice(0, 10) });
 });
-setInterval(() => {
-  hive.viewers = wss.clients.size;
-  hive.tick(1);
-  const v = hive.view(lastEvent);
-  lastEvent = hive.eventSeq;
-  const msg = JSON.stringify(v);
-  for (const c of wss.clients) if (c.readyState === 1) c.send(msg);
-}, 1000);
-
-const saveNow = () => store.save(hive.save());
-setInterval(saveNow, 30000);
-for (const sig of ['SIGTERM', 'SIGINT']) process.on(sig, async () => { await saveNow(); process.exit(0); });
-server.listen(PORT, () => console.log(`[http] listening on :${PORT}`));
+app.listen(PORT, () => console.log(`[http] Neon Siege on :${PORT} (saves: ${store.kind})`));

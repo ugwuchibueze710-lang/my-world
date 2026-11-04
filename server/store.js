@@ -1,7 +1,7 @@
 // Saves the hive so it continues after restarts and deploys: Redis (Render Key Value) when REDIS_URL is set, plus a local file.
 import fs from 'fs'; import path from 'path'; import zlib from 'zlib';
 export async function createStore() {
-  const file = path.join(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'hive.sav');
+  const file = path.join(process.env.DATA_DIR || path.join(process.cwd(), 'data'), 'siege.sav');
   let redis = null;
   if (process.env.REDIS_URL) {
     try {
@@ -11,7 +11,7 @@ export async function createStore() {
       await redis.connect(); console.log('[save] connected to Redis');
     } catch (e) { console.warn('[save] Redis unavailable, using file only:', e.message); redis = null; }
   }
-  const KEY = 'neon-hive:save';
+  const KEY = 'neon-siege:save';
   return {
     kind: redis ? 'redis+file' : 'file',
     async load() {

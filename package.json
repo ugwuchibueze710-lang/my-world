@@ -1,12 +1,11 @@
 {
   "name": "my-world",
   "version": "1.0.0",
-  "description": "Neon Hive: an AI that copies itself every time it solves a puzzle. Puzzles get harder, the hive gets bigger, and you can help.",
+  "description": "Neon Siege: first-person alien survival in a neon arena.",
   "type": "module",
   "main": "server/index.js",
   "scripts": {
-    "start": "node server/index.js",
-    "dev": "FRESH_HIVE=1 node server/index.js"
+    "start": "node server/index.js"
   },
   "engines": {
     "node": ">=18"
