@@ -148,9 +148,9 @@ function skinMat(type) {
 
 // ============================================================== aliens
 const TYPES = {
-  crawler: { hp: 55, speed: 6.0, dmg: 10, reach: 1.5, r: 0.7, score: 100, eye: 0xff3b2b },
-  brute: { hp: 360, speed: 2.7, dmg: 28, reach: 2.4, r: 1.0, score: 400, eye: 0xffd23d },
-  spitter: { hp: 120, speed: 3.6, dmg: 13, reach: 0, r: 0.55, score: 200, eye: 0x7dfff0 },
+  crawler: { hp: 55, speed: 3.5, dmg: 10, reach: 1.5, r: 0.7, score: 100, eye: 0xff3b2b },
+  brute: { hp: 360, speed: 2.0, dmg: 28, reach: 2.4, r: 1.0, score: 400, eye: 0xffd23d },
+  spitter: { hp: 120, speed: 2.8, dmg: 13, reach: 0, r: 0.55, score: 200, eye: 0x7dfff0 },
 };
 const aliens = [];
 const seg = (mat, r1, r2, len) => { const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, len, 10), mat); m.position.y = -len / 2; return m; };
@@ -332,9 +332,7 @@ function updateListener() {
 
 // ============================================================== weapons (viewmodels built from parts)
 const WEAPONS = [
-  { id: 'rifle', name: 'ASSAULT RIFLE', auto: true, rpm: 620, dmg: 32, head: 2.0, mag: 30, reload: 2.1, spread: 0.022, ads: 0.004, recoil: 0.016, kick: 0.05, pellets: 1, push: 1.2 },
-  { id: 'shotgun', name: 'PUMP SHOTGUN', auto: false, rpm: 68, dmg: 22, head: 1.5, mag: 6, reload: 2.7, spread: 0.075, ads: 0.055, recoil: 0.06, kick: 0.14, pellets: 10, push: 0.9, falloff: 14 },
-  { id: 'pistol', name: 'SIDEARM', auto: false, rpm: 420, dmg: 42, head: 2.2, mag: 12, reload: 1.4, spread: 0.012, ads: 0.003, recoil: 0.022, kick: 0.06, pellets: 1, push: 1.4 },
+  { id: 'ak', name: 'AK-74M', auto: true, rpm: 600, dmg: 34, head: 2.0, mag: 30, reload: 2.6, spread: 0.02, ads: 0.003, recoil: 0.017, kick: 0.05, pellets: 1, push: 1.2 },
 ];
 const metal = new THREE.MeshStandardMaterial({ color: 0x1b1d26, metalness: 0.85, roughness: 0.32 });
 const polymer = new THREE.MeshStandardMaterial({ color: 0x101117, metalness: 0.2, roughness: 0.75 });
@@ -365,10 +363,59 @@ function buildGun(id) {
   g.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
   return g;
 }
-const viewmodel = new THREE.Group(); viewmodel.scale.setScalar(0.78); camera.add(viewmodel);
-const guns = WEAPONS.map((w) => { const g = buildGun(w.id); g.visible = false; viewmodel.add(g); return g; });
+const viewmodel = new THREE.Group(); camera.add(viewmodel);
+// ---- the AK-74M in gloved first-person arms: "FPS AK-74m animations" by Cransh (CC BY 4.0), with idle, walk, run,
+// shot, draw and three magazine-change reloads. The arms and rifle are one rig, so the hands are always on the gun.
+const VM = { ready: false };
+const VM_HIP = new THREE.Vector3(0.035, -0.055, -0.13);  // where the rig's eye bone sits relative to our camera (hip fire)
+const SIGHT_H = 0.052;                                    // front-sight post height above the bore
+const vmFill = new THREE.PointLight(0xdfe8ff, 2.2, 2.5, 1.5); vmFill.position.set(0.3, 0.25, 0.2); camera.add(vmFill); // keeps the gun readable in the dark arena
+new GLTFLoader().load('/assets/ak74m_arms.glb', (g) => {
+  const model = g.scene, holder = new THREE.Group();
+  model.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; if (o.material) { o.material.envMapIntensity = 1; } } });
+  holder.add(model); viewmodel.add(holder); holder.rotation.y = Math.PI; // the rig faces +Z; our camera looks down -Z
+  const mixer = new THREE.AnimationMixer(model), A = {};
+  for (const c of g.animations) A[c.name.replace('Rig|', '')] = mixer.clipAction(c);
+  for (const k of ['AK_Shot', 'AK_Reload', 'AK_Reload_full', 'AK_Reload_var2', 'AK_Draw']) { A[k].setLoop(THREE.LoopOnce, 1); A[k].clampWhenFinished = true; }
+  for (const k of ['AK_Idle', 'AK_Walk', 'AK_Run']) { A[k].play(); A[k].setEffectiveWeight(k === 'AK_Idle' ? 1 : 0); }
+  mixer.update(0.01); model.updateMatrixWorld(true);
+  const bone = (n) => model.getObjectByName(n);
+  const head = bone('Head_Cam_014');
+  model.position.copy(head.getWorldPosition(new THREE.Vector3()).applyMatrix4(new THREE.Matrix4().copy(model.matrixWorld).invert())).negate();
+  Object.assign(VM, { ready: true, model, holder, mixer, A, base: A.AK_Idle, rif: bone('Rif_059'), muzzle: bone('Rif_end_079'), pmag: bone('Pmag_062'), cur: 'AK_Idle', baseQ: holder.quaternion.clone() });
+  VM.durations = Object.fromEntries(g.animations.map((c) => [c.name.replace('Rig|', ''), c.duration]));
+  if (game.state === 'play') vmDraw();
+}, undefined, (e) => console.warn('weapon model failed', e));
+function vmPlayBase(name) { if (VM.ready) VM.cur = name; }
+// blend idle / walk / run, and let a reload or draw take the arms over completely
+function vmWeights(dt) {
+  const busy = P.reloading > 0 || (VM.drawT || 0) > 0;
+  VM.drawT = Math.max(0, (VM.drawT || 0) - dt);
+  for (const k of ['AK_Idle', 'AK_Walk', 'AK_Run']) {
+    const a = VM.A[k], want = busy ? 0 : k === VM.cur ? 1 : 0;
+    a.setEffectiveWeight(THREE.MathUtils.lerp(a.getEffectiveWeight(), want, Math.min(1, dt * (busy ? 14 : 7))));
+  }
+  for (const k of ['AK_Reload', 'AK_Reload_full', 'AK_Draw']) { const a = VM.A[k]; if (a.isRunning() || a.getEffectiveWeight() > 0) a.setEffectiveWeight(busy ? 1 : Math.max(0, a.getEffectiveWeight() - dt * 6)); }
+}
+function vmOneShot(name, scale = 1, weight = 1) {
+  if (!VM.ready) return 0;
+  const a = VM.A[name]; a.stop(); a.reset(); a.setEffectiveTimeScale(scale); a.setEffectiveWeight(weight); a.play();
+  return VM.durations[name] / scale;
+}
+function vmDraw() { VM.drawT = vmOneShot('AK_Draw', 1, 1); SFX.click(); }
+const muzzleWorld = () => (VM.ready ? VM.muzzle.getWorldPosition(new THREE.Vector3()) : camera.localToWorld(new THREE.Vector3(0.1, -0.1, -0.8)));
+// a spent magazine that falls, bounces and lies on the floor
+const magGeo = (() => { const g = []; for (let i = 0; i < 5; i++) g.push(new THREE.BoxGeometry(0.03, 0.05, 0.07).translate(0, -i * 0.045, -i * i * 0.004)); return g; })();
+const magMat = new THREE.MeshStandardMaterial({ color: 0x2a221c, metalness: 0.4, roughness: 0.6 });
+function dropMag() {
+  const grp = new THREE.Group(); for (const geo of magGeo) grp.add(new THREE.Mesh(geo, magMat));
+  const from = VM.ready && VM.pmag ? VM.pmag.getWorldPosition(new THREE.Vector3()) : camera.localToWorld(new THREE.Vector3(0.1, -0.3, -0.4));
+  grp.position.copy(from); grp.quaternion.copy(camera.quaternion); scene.add(grp);
+  casings.push({ m: grp, v: new THREE.Vector3(P.vel.x * 0.5, -0.5, P.vel.z * 0.5), spin: new THREE.Vector3(rand(-3, 3), rand(-2, 2), rand(-3, 3)), t: 14, mag: true });
+}
+
 const flashTex = (() => { const c = document.createElement('canvas'); c.width = c.height = 128; const x = c.getContext('2d'); const g = x.createRadialGradient(64, 64, 2, 64, 64, 60); g.addColorStop(0, 'rgba(255,255,230,1)'); g.addColorStop(0.25, 'rgba(255,200,90,0.9)'); g.addColorStop(1, 'rgba(255,120,20,0)'); x.fillStyle = g; for (let i = 0; i < 7; i++) { x.save(); x.translate(64, 64); x.rotate((i / 7) * Math.PI * 2); x.fillRect(-6, 0, 12, 60); x.restore(); } x.beginPath(); x.arc(64, 64, 30, 0, 7); x.fill(); return new THREE.CanvasTexture(c); })();
-const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, transparent: true })); flash.visible = false; viewmodel.add(flash);
+const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: flashTex, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, transparent: true })); flash.visible = false; scene.add(flash);
 const flashLight = new THREE.PointLight(0xffb060, 0, 14, 2); camera.add(flashLight); flashLight.position.set(0.1, -0.05, -1.6);
 
 
@@ -378,50 +425,7 @@ const flashLight = new THREE.PointLight(0xffb060, 0, 14, 2); camera.add(flashLig
 // fingers wrap the grip (trigger finger on the trigger). The head is hidden so the camera sits where your eyes are.
 const BODY = { ready: false };
 const nm = (n) => n.replace(/[.\[\]:/]/g, '');
-new GLTFLoader().load('/assets/human.glb', (gltf) => {
-  const root = SkeletonUtils.clone(gltf.scene);
-  const bones = {}; root.traverse((o) => { if (o.isBone) bones[nm(o.name)] = o; });
-  const B_ = (n) => bones[nm(n)];
-  root.updateMatrixWorld(true);
-  const handX = Math.abs(B_('DEF-hand.R').getWorldPosition(new THREE.Vector3()).x);
-  const meshes = []; root.traverse((o) => { if (o.isSkinnedMesh) meshes.push(o); });
-  for (const mesh of meshes) {
-  const uni = { uBind: { value: mesh.matrixWorld.clone() }, uHandX: { value: handX } };
-  const mat = new THREE.MeshStandardMaterial({ roughness: 0.82, metalness: 0.05, color: 0xffffff });
-  mat.onBeforeCompile = (sh) => {
-    Object.assign(sh.uniforms, uni);
-    sh.vertexShader = sh.vertexShader.replace('#include <common>', '#include <common>\nuniform mat4 uBind; varying vec3 vB;').replace('#include <begin_vertex>', '#include <begin_vertex>\nvB = (uBind * vec4(position, 1.0)).xyz;');
-    sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>
-      uniform float uHandX; varying vec3 vB;
-      float hsh(vec3 p){ return fract(sin(dot(floor(p * 260.0), vec3(12.9898, 78.233, 37.719))) * 43758.5453); }`)
-      .replace('#include <color_fragment>', `#include <color_fragment>
-      vec3 c = vec3(0.13, 0.15, 0.16);                                   // tactical jacket
-      if (vB.y < 0.98) c = vec3(0.09, 0.1, 0.11);                         // trousers
-      if (vB.y < 0.14) c = vec3(0.035, 0.035, 0.04);                      // boots
-      if (vB.y > 1.06 && vB.y < 1.44 && abs(vB.x) < 0.2) c = vec3(0.07, 0.08, 0.085); // plate carrier
-      float ax = abs(vB.x);
-      if (ax > uHandX - 0.035) c = vec3(0.045, 0.045, 0.05);              // gloves
-      if (ax > uHandX - 0.12 && ax < uHandX - 0.035) c = mix(c, vec3(0.05, 0.055, 0.06), 0.6); // glove cuffs
-      float edge = abs(ax - (uHandX - 0.125));
-      if (edge < 0.006) c = vec3(0.1, 1.7, 1.9);                          // neon sleeve band
-      if (vB.y > 1.06 && vB.y < 1.44 && abs(abs(vB.x) - 0.2) < 0.006) c = vec3(1.7, 0.2, 1.5); // carrier piping
-      c *= 0.9 + hsh(vB) * 0.16;                                          // fabric grain
-      diffuseColor.rgb = c;`);
-  };
-  mat.customProgramCacheKey = () => 'tactical-suit';
-  mesh.material = mat; mesh.frustumCulled = false;
-  }
-  root.traverse((o) => { if (o.isMesh) o.frustumCulled = false; });
-  const holder = new THREE.Group(); holder.add(root); scene.add(holder);
-  // locomotion clips, in place (no root drift)
-  const mixer = new THREE.AnimationMixer(root), acts = {};
-  for (const c of gltf.animations) {
-    c.tracks = c.tracks.filter((t) => !/^root\.position|\.scale$/.test(t.name));
-    acts[c.name] = mixer.clipAction(c);
-  }
-  const rest = {}; for (const k in bones) rest[k] = bones[k].quaternion.clone();
-  Object.assign(BODY, { ready: true, root, holder, bones, B: B_, mixer, acts, cur: null, rest, hipsRest: B_('DEF-hips').position.clone() });
-}, undefined, (e) => console.warn('body model failed', e));
+
 
 const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _m = new THREE.Matrix4();
 function setWorldQuat(bone, qWorld) { bone.parent.getWorldQuaternion(_q2); bone.quaternion.copy(_q2.invert().multiply(qWorld)); bone.updateMatrixWorld(true); }
@@ -453,43 +457,7 @@ function solveArm(side, target, pole, handY, handZ, curl) {
   ha.updateMatrixWorld(true);
 }
 let FINGER_SIGN = 1;
-function updateBody(dt) {
-  if (!BODY.ready) return;
-  const show = game.state === 'play' || game.state === 'paused' || game.state === 'dying';
-  BODY.holder.visible = show; if (!show) return;
-  // place the body under the camera, facing where you look (shifted back so the neck never enters the view)
-  const fwd = new THREE.Vector3(-Math.sin(P.yaw), 0, -Math.cos(P.yaw));
-  BODY.holder.position.set(P.pos.x, P.pos.y + (P.crouch ? -0.02 : 0), P.pos.z).addScaledVector(fwd, -0.2);
-  BODY.holder.rotation.y = P.yaw + Math.PI;
-  // legs: pick a locomotion clip
-  const hs = Math.hypot(P.vel.x, P.vel.z), along = (P.vel.x * fwd.x + P.vel.z * fwd.z);
-  const clip = !P.ground ? 'Jog_Fwd_Loop' : P.crouch ? 'Crouch_Idle_Loop' : hs < 0.5 ? 'Idle_Loop' : hs > 7 ? 'Sprint_Loop' : hs > 4.5 ? 'Jog_Fwd_Loop' : 'Walk_Loop';
-  const act = BODY.acts[clip];
-  if (BODY.cur !== act) { act.reset().play(); if (BODY.cur) BODY.cur.crossFadeTo(act, 0.25, false); BODY.cur = act; }
-  act.setEffectiveTimeScale(hs < 0.5 ? 1 : (along < -0.5 ? -1 : 1) * clamp(hs / (clip === 'Walk_Loop' ? 1.6 : clip === 'Sprint_Loop' ? 7 : 4), 0.6, 1.8));
-  BODY.mixer.update(dt);
-  const B_ = BODY.B, hips = B_('DEF-hips'); hips.position.x = BODY.hipsRest.x; hips.position.z = BODY.hipsRest.z;
-  // hide the head; lean the spine with the aim
-  B_('DEF-head').scale.setScalar(0.001); B_('DEF-neck').scale.setScalar(0.6);
-  BODY.root.updateMatrixWorld(true);
-  const right = new THREE.Vector3(Math.cos(P.yaw), 0, -Math.sin(P.yaw));
-  for (const n of ['DEF-spine.001', 'DEF-spine.002', 'DEF-spine.003']) { const b = B_(n); b.getWorldQuaternion(_q1); const pt = P.pitch + P.recoil; setWorldQuat(b, new THREE.Quaternion().setFromAxisAngle(right, (pt > 0 ? pt * 0.25 : pt * 0.06)).multiply(_q1)); }
-  // arms onto the gun
-  camera.updateMatrixWorld(true);
-  const gun = guns[P.weapon], ud = gun.userData;
-  const gx = new THREE.Vector3(1, 0, 0).transformDirection(gun.matrixWorld), gy = new THREE.Vector3(0, 1, 0).transformDirection(gun.matrixWorld), gz = new THREE.Vector3(0, 0, 1).transformDirection(gun.matrixWorld);
-  const G = (x, y, z) => gx.clone().multiplyScalar(x).addScaledVector(gy, y).addScaledVector(gz, z);
-  const rT = gun.localToWorld(ud.rGrip.clone());
-  let lT = gun.localToWorld(ud.lGrip.clone());
-  if (P.reloading > 0) { const w = WEAPONS[P.weapon], k = 1 - P.reloading / w.reload, s = Math.sin(clamp(k, 0, 1) * Math.PI); lT = lT.lerp(gun.localToWorld(ud.mag.clone()).add(new THREE.Vector3(0, -0.12 * s, 0)), Math.min(1, s * 1.6)); }
-  if (ud.pumpHand && ud.pump) lT.addScaledVector(gz, ud.pump.position.z + 0.4);
-  const S = B_('DEF-upper_arm.R').getWorldPosition(new THREE.Vector3());
-  const down = new THREE.Vector3(0, -1, 0);
-  solveArm('R', rT, S.clone().addScaledVector(down, 0.6).addScaledVector(right, 0.35).addScaledVector(fwd, -0.1), G(-0.25, -0.15, -1), G(0, 1, -0.25), [0.55, 1.25, 0.6]);
-  const SL = B_('DEF-upper_arm.L').getWorldPosition(new THREE.Vector3());
-  if (ud.pistol) solveArm('L', lT, SL.clone().addScaledVector(down, 0.6).addScaledVector(right, -0.3), G(0.75, -0.1, -0.65), G(0, 1, 0), [1.2, 1.2, 0.4]);
-  else solveArm('L', lT, SL.clone().addScaledVector(down, 0.7).addScaledVector(right, -0.45), G(0.65, 0.55, -0.2), G(0, 0.2, -1), [1.2, 1.25, 0.5]);
-}
+function updateBody() {}
 
 // ============================================================== input
 const keys = {}; let mouseDown = false, rightDown = false, locked = false;
@@ -499,10 +467,11 @@ addEventListener('mousedown', (e) => { if (!locked) return; if (e.button === 0) 
 addEventListener('mouseup', (e) => { if (e.button === 0) mouseDown = false; if (e.button === 2) rightDown = false; });
 addEventListener('contextmenu', (e) => e.preventDefault());
 addEventListener('wheel', (e) => { if (game.state === 'play') switchWeapon(e.deltaY > 0 ? 1 : -1); });
-addEventListener('mousemove', (e) => { if (!locked || game.state !== 'play') return; const s = 0.0022 * (P.ads > 0.5 ? 0.6 : 1); P.yaw -= e.movementX * s; P.pitch = clamp(P.pitch - e.movementY * s, -1.5, 1.5); });
+addEventListener('mousemove', (e) => { if (!locked || game.state !== 'play') return; const s = 0.0022 * (P.ads > 0.5 ? 0.6 : 1); P.yaw -= e.movementX * s; P.lookDX = (P.lookDX || 0) + e.movementX; P.pitch = clamp(P.pitch - e.movementY * s, -1.5, 1.5); });
 document.addEventListener('pointerlockchange', () => { locked = document.pointerLockElement === renderer.domElement; if (!locked && game.state === 'play' && !usingPad) pause(); });
 renderer.domElement.addEventListener('click', () => { if (game.state === 'play' && !locked) renderer.domElement.requestPointerLock(); });
 function onKey(code) {
+  if (code === 'KeyF') { if (document.fullscreenElement) document.exitFullscreen(); else goFullscreen(); return; }
   if (game.state === 'over' && (code === 'Enter' || code === 'Space')) return start();
   if (game.state !== 'play') return;
   if (code === 'KeyR') reload();
@@ -555,18 +524,20 @@ const game = { state: 'menu', t: 0, wave: 0, kills: 0, headshots: 0, toSpawn: 0,
 function jump() { if (P.ground && game.state === 'play') { P.vel.y = 6.6; P.ground = false; P.crouch = false; } }
 function crouchPress() {
   const speed = Math.hypot(P.vel.x, P.vel.z);
-  if (!P.crouch && speed > 6.5 && P.ground) { P.slide = 0.9; P.crouch = true; const f = new THREE.Vector3(P.vel.x, 0, P.vel.z).normalize(); P.vel.x = f.x * 11; P.vel.z = f.z * 11; SFX.land(); }
+  if (!P.crouch && speed > 9 && P.ground) { P.slide = 0.9; P.crouch = true; const f = new THREE.Vector3(P.vel.x, 0, P.vel.z).normalize(); P.vel.x = f.x * 15; P.vel.z = f.z * 15; SFX.land(); }
   else P.crouch = !P.crouch;
 }
 function setWeapon(i) {
   if (i === P.weapon || P.reloading > 0) { if (i !== P.weapon) P.reloading = 0; else return; }
-  P.weapon = i; guns.forEach((g, k) => (g.visible = k === i)); P.fireCd = 0.35; P.kick = 0.25; P.reloading = 0; updateAmmo(); SFX.click();
+  P.weapon = 0; P.fireCd = 0.35; P.reloading = 0; updateAmmo();
 }
 function switchWeapon(d) { setWeapon((P.weapon + d + WEAPONS.length) % WEAPONS.length); }
 function reload() {
   const w = WEAPONS[P.weapon];
   if (P.reloading > 0 || P.mags[P.weapon] >= w.mag) return;
-  P.reloading = w.reload; SFX.reload(w.id); $('h-reload').textContent = 'RELOADING…';
+  const empty = P.mags[P.weapon] === 0, clip = empty ? 'AK_Reload_full' : 'AK_Reload';
+  P.reloading = VM.ready ? vmOneShot(clip, 1.1) : w.reload; P.reloadMax = P.reloading; P.magDropped = false;
+  SFX.reload(w.id); if (empty) setTimeout(() => SFX.click(), 2400); $('h-reload').textContent = 'RELOADING…';
 }
 // light aim assist on controller (Fortnite has it too): slow-down near targets, a small snap when you start aiming
 function targetNearCrosshair(maxAngle) {
@@ -600,9 +571,8 @@ function fire() {
   if (P.mags[P.weapon] <= 0) { SFX.click(); P.fireCd = 0.25; reload(); return; }
   P.mags[P.weapon]--; P.fireCd = 60 / w.rpm;
   SFX.shot(w.id); rumble(w.id === 'shotgun' ? 1 : 0.5, w.id === 'shotgun' ? 0.8 : 0.4, w.id === 'shotgun' ? 140 : 60);
-  if (w.id === 'shotgun') { P.pumpT = 0.55; setTimeout(() => SFX.pump(), 120); }
-  const gun = guns[P.weapon];
-  const muzzle = gun.localToWorld(gun.userData.muzzle.clone());
+  vmOneShot('AK_Shot', 1.9, 0.75);
+  const muzzle = muzzleWorld();
   const moving = Math.hypot(P.vel.x, P.vel.z) > 1, spread = THREE.MathUtils.lerp(w.spread, w.ads, P.ads) * (moving ? 1.5 : 1) * (P.crouch ? 0.75 : 1) * (P.ground ? 1 : 2) * (1 + P.recoil * 6);
   const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
   const right = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion), up = new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
@@ -626,9 +596,9 @@ function fire() {
   // recoil
   P.recoil += w.recoil * (1 - P.ads * 0.35); P.recoilYaw += rand(-1, 1) * w.recoil * 0.4; P.kick = Math.min(1, P.kick + w.kick * 4);
   // muzzle flash + light + casing
-  flash.position.copy(gun.userData.muzzle).add(gun.position); flash.material.rotation = Math.random() * 6; flash.scale.setScalar(w.id === 'shotgun' ? 0.32 : 0.2); flash.visible = true; flash.userData.t = 0.045;
+  flash.position.copy(muzzle).addScaledVector(fwd, 0.04); flash.material.rotation = Math.random() * 6; flash.scale.setScalar(0.32); flash.visible = true; flash.userData.t = 0.045;
   flashLight.intensity = w.id === 'shotgun' ? 9 : 5;
-  const ej = gun.localToWorld(gun.userData.eject.clone()); const m = new THREE.Mesh(casingGeo, casingMat); m.position.copy(ej); scene.add(m);
+  const ej = (VM.ready ? VM.rif.getWorldPosition(new THREE.Vector3()) : muzzle.clone()).addScaledVector(right, 0.03).addScaledVector(up, 0.05); const m = new THREE.Mesh(casingGeo, casingMat); m.position.copy(ej); scene.add(m);
   casings.push({ m, v: right.clone().multiplyScalar(rand(1.8, 2.8)).addScaledVector(up, rand(1.2, 2)), spin: new THREE.Vector3(rand(-20, 20), rand(-20, 20), rand(-20, 20)), t: 4 });
   if (casings.length > 60) scene.remove(casings.shift().m);
   updateAmmo();
@@ -658,7 +628,7 @@ function damageAlien(a, dmg, point, dir, push, head) {
   a.hp -= dmg; a.stagger = Math.max(a.stagger, a.type === 'brute' ? 0.12 : 0.3); a.hitFlash = 1;
   ichor.emit(point, dir.clone().multiplyScalar(0.6).add(new THREE.Vector3(0, 0.3, 0)), head ? 26 : 14, head ? 5 : 3.5, 0.7, 0.9);
   SFX.flesh(point, head);
-  a.vel.addScaledVector(new THREE.Vector3(dir.x, 0, dir.z).normalize(), push * (a.type === 'brute' ? 0.4 : 1.4));
+  a.vel.addScaledVector(new THREE.Vector3(dir.x, 0, dir.z).normalize(), push * (a.type === 'brute' ? 0.8 : 2.6)); // bullets knock them back
   a.flinch = 1;
   if (a.hp <= 0) { kill(a, dir, head, point); return true; }
   return false;
@@ -679,7 +649,7 @@ function kill(a, dir, head, point) {
 }
 function spawnAlien(type, at, fromPortal) {
   const a = buildAlien(type); const hpScale = 0.8 + (game.wave - 1) * 0.08;
-  a.hp = a.maxHp = a.T.hp * hpScale; a.speed = a.T.speed * (0.6 + 0.4 * Math.min(1.5, diff())) * rand(0.9, 1.1);
+  a.hp = a.maxHp = a.T.hp * hpScale; a.speed = Math.min(4, a.T.speed * (0.7 + 0.3 * Math.min(1.4, diff())) * rand(0.92, 1.05)); // never more than half your walking speed
   a.root.position.set(at.x + rand(-1.5, 1.5), fromPortal ? 0 : -2.6, at.z + (fromPortal ? rand(0.5, 2) : rand(-1, 1)));
   a.rising = !fromPortal; a.root.rotation.y = Math.atan2(P.pos.x - at.x, P.pos.z - at.z);
   aliens.push(a); game.alive++;
@@ -723,14 +693,14 @@ function updateAliens(dt) {
     }
     if (a.type === 'crawler') {
       if (a.retreat > 0) want.copy(toP).negate();                                   // backing off after a strike
-      else if (dist < 4.5 && a.attackCd > 0) { want.set(-toP.z, 0, toP.x).multiplyScalar(a.orbit).addScaledVector(toP, dist < 3 ? -0.8 : 0.2); } // circle at range
-      if (dist < 5 && a.attackCd <= 0 && !a.leap && !a.retreat) { a.leap = 0.45; a.vel.addScaledVector(toP, 8); a.vel.y = 3; SFX.screech(R.position, 'crawler'); }
+      else if (dist < 7 && a.attackCd > 0) { want.set(-toP.z, 0, toP.x).multiplyScalar(a.orbit).addScaledVector(toP, dist < 5 ? -0.9 : 0.1); } // circle at range
+      if (dist < 3.5 && a.attackCd <= 0 && !a.leap && !a.retreat) { a.leap = 0.4; a.vel.addScaledVector(toP, 4.5); a.vel.y = 2.4; SFX.screech(R.position, 'crawler'); }
     }
     if (a.type === 'brute' && a.retreat > 0) { want.copy(toP).negate(); speed *= 0.7; }
     if (a.leap) { a.leap -= dt; if (a.leap <= 0) a.leap = 0; }
     if (a.type === 'brute' && dist < T.reach + 0.6 && a.attackCd <= 0 && !a.windup) { a.windup = 0.55; SFX.screech(R.position, 'brute'); }
     if (a.windup) { a.windup -= dt; speed *= 0.2; if (a.windup <= 0) { a.windup = 0; a.attackCd = 2.4 / Math.min(1.5, diff()); a.retreat = 0.9; if (dist < T.reach + 0.5) { hurt(T.dmg * diff(), R.position); P.vel.addScaledVector(toP, 9); P.vel.y = 3; } } }
-    if (a.type === 'crawler' && dist < T.reach && a.attackCd <= 0) { a.attackCd = 2.2 / Math.min(1.6, diff()); a.retreat = 1.1; a.leap = 0; a.vel.addScaledVector(toP, -5); hurt(T.dmg * diff(), R.position); }
+    if (a.type === 'crawler' && dist < T.reach && a.attackCd <= 0) { a.attackCd = 2.2 / Math.min(1.6, diff()); a.retreat = 1.6; a.leap = 0; a.vel.addScaledVector(toP, -6); hurt(T.dmg * diff(), R.position); }
     // separation from the pack
     for (const b of aliens) { if (b === a || !b.alive) continue; const dx = R.position.x - b.root.position.x, dz = R.position.z - b.root.position.z, d = Math.hypot(dx, dz), m = T.r + b.T.r; if (d < m && d > 1e-3) { want.x += (dx / d) * (m - d) * 2; want.z += (dz / d) * (m - d) * 2; } }
     want.y = 0; if (want.lengthSq() > 1) want.normalize();
@@ -801,19 +771,20 @@ function updateWaves(dt) {
 function banner(text, sub) { const b = $('banner'); b.innerHTML = `${text}<small>${sub || ''}</small>`; b.style.opacity = 1; clearTimeout(banner.t); banner.t = setTimeout(() => (b.style.opacity = 0), 2400); }
 
 // ============================================================== game flow
+function goFullscreen() { const el = document.documentElement; if (!document.fullscreenElement && el.requestFullscreen) el.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); }
 function start() {
-  initAudio(); ac?.resume?.();
-  if (game.state === 'paused') { game.state = 'play'; $('menu').classList.add('hidden'); $('hud').classList.remove('hidden'); if (!usingPad) renderer.domElement.requestPointerLock(); return; }
+  initAudio(); ac?.resume?.(); goFullscreen();
+  if (game.state === 'paused') { game.state = 'play'; $('menu').classList.add('hidden'); $('hud').classList.remove('hidden'); if (!usingPad) renderer.domElement.requestPointerLock()?.catch?.(() => {}); return; }
   for (const a of aliens) scene.remove(a.root); aliens.length = 0;
   for (const g of acid) scene.remove(g.m); acid.length = 0;
   for (const p of pools) scene.remove(p.m); pools.length = 0;
   Object.assign(P, { pos: new THREE.Vector3(0, 0, 12), vel: new THREE.Vector3(), yaw: 0, pitch: 0, hp: 100, lastHurt: -99, crouch: false, slide: 0, ads: 0, reloading: 0, recoil: 0, recoilYaw: 0, shake: 0 });
-  P.mags = WEAPONS.map((w) => w.mag); setWeapon(0); P.weapon = 0; guns.forEach((g, k) => (g.visible = k === 0));
+  P.mags = WEAPONS.map((w) => w.mag); P.weapon = 0; vmDraw();
   Object.assign(game, { state: 'play', t: 0, wave: 0, kills: 0, headshots: 0, toSpawn: 0, breakT: 0, deadT: 0, name: ($('name').value || 'Player').trim().slice(0, 16) });
   try { localStorage.setItem('siege-name', game.name); } catch {}
   $('menu').classList.add('hidden'); $('over').classList.add('hidden'); $('hud').classList.remove('hidden'); $('hurt').style.opacity = 0;
   $('play').textContent = 'PLAY';
-  if (!usingPad) renderer.domElement.requestPointerLock();
+  if (!usingPad) renderer.domElement.requestPointerLock()?.catch?.(() => {});
   updateAmmo(); startWave();
 }
 function pause() {
@@ -865,11 +836,11 @@ function update(dt) {
     const mlen = Math.hypot(mx, mz); if (mlen > 1) { mx /= mlen; mz /= mlen; }
     const sprint = (keys.ShiftLeft || pad.sprint) && mz > 0.3 && !P.crouch && P.ads < 0.5;
     if (sprint && P.reloading <= 0) P.ads = 0;
-    const maxSpeed = (P.crouch ? 2.6 : sprint ? 8.2 : 5.2) * (P.ads > 0.5 ? 0.6 : 1);
+    const maxSpeed = (P.crouch ? 4 : sprint ? 12 : 8) * (P.ads > 0.5 ? 0.7 : 1);
     const fx = -Math.sin(P.yaw), fz = -Math.cos(P.yaw), rx = Math.cos(P.yaw), rz = -Math.sin(P.yaw);
     const wantX = (fx * mz + rx * mx) * maxSpeed, wantZ = (fz * mz + rz * mx) * maxSpeed;
     if (P.slide > 0) { P.slide -= dt; P.vel.x *= 1 - dt * 1.2; P.vel.z *= 1 - dt * 1.2; }
-    else { const acc = P.ground ? 12 : 2.5; P.vel.x += (wantX - P.vel.x) * Math.min(1, dt * acc); P.vel.z += (wantZ - P.vel.z) * Math.min(1, dt * acc); }
+    else { const acc = P.ground ? 16 : 4; P.vel.x += (wantX - P.vel.x) * Math.min(1, dt * acc); P.vel.z += (wantZ - P.vel.z) * Math.min(1, dt * acc); }
     P.vel.y -= 18 * dt;
     P.pos.addScaledVector(P.vel, dt);
     const gy = groundAt(P.pos.x, P.pos.z, P.pos.y);
@@ -886,7 +857,7 @@ function update(dt) {
     const trigger = mouseDown || pad.r2 > 0.4;
     if (trigger && (w.auto || !P.triggerHeld)) fire();
     P.triggerHeld = trigger;
-    if (P.reloading > 0) { P.reloading -= dt; if (P.reloading <= 0) { P.mags[P.weapon] = w.mag; $('h-reload').textContent = ''; updateAmmo(); } }
+    if (P.reloading > 0) { P.reloading -= dt; if (P.reloading <= 0) { P.mags[P.weapon] = w.mag; vmPlayBase('AK_Idle'); $('h-reload').textContent = ''; updateAmmo(); } }
     // regen
     if (game.t - P.lastHurt > 4 && P.hp < 100) P.hp = Math.min(100, P.hp + dt * 9);
     if (P.hp < 30 && Math.floor(game.t * 1.3) !== Math.floor((game.t - dt) * 1.3)) SFX.heartbeat();
@@ -907,16 +878,31 @@ function update(dt) {
   const bobY = Math.sin(P.bob * 2) * 0.035 * (1 - P.ads * 0.85), bobX = Math.cos(P.bob) * 0.025 * (1 - P.ads * 0.85);
   camera.position.set(P.pos.x + (Math.random() - 0.5) * P.shake * 0.12, P.pos.y + P.eyeY + bobY + (Math.random() - 0.5) * P.shake * 0.12, P.pos.z);
   camera.rotation.set(P.pitch + P.recoil, P.yaw + P.recoilYaw, game.state === 'dying' ? Math.min(0.7, game.deadT * 0.6) : 0);
-  const fov = 78 - P.ads * (P.weapon === 1 ? 10 : 24); if (Math.abs(camera.fov - fov) > 0.05) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  const fov = 78 - P.ads * 22; if (Math.abs(camera.fov - fov) > 0.05) { camera.fov = fov; camera.updateProjectionMatrix(); }
   // viewmodel: hip ↔ sights, bob, sway, kick, shotgun pump
-  const gun = guns[P.weapon], ud = gun.userData;
-  const target = ud.hip.clone().lerp(ud.aim, P.ads);
-  gun.position.set(target.x + bobX * 0.6, target.y + bobY * 0.5 - (P.reloading > 0 ? 0.12 : 0), target.z + P.kick * 0.09);
-  gun.rotation.set(P.kick * 0.25 + (P.reloading > 0 ? 0.5 : 0), 0, (P.reloading > 0 ? 0.35 : 0) + bobX * 0.4);
-  if (ud.pump) { P.pumpT = Math.max(0, P.pumpT - dt); ud.pump.position.z = -0.4 + Math.sin(Math.min(1, (0.55 - P.pumpT) / 0.4) * Math.PI) * 0.09 * (P.pumpT > 0 ? 1 : 0); }
   viewmodel.visible = game.state === 'play' || game.state === 'paused';
-  updateBody(dt);
-  if (flash.visible) { flash.userData.t -= dt; if (flash.userData.t <= 0) flash.visible = false; }
+  if (VM.ready && viewmodel.visible) {
+    const hs2 = Math.hypot(P.vel.x, P.vel.z), sprinting = hs2 > 9.5 && P.ground && P.ads < 0.3 && P.reloading <= 0;
+    vmPlayBase(sprinting ? 'AK_Run' : hs2 > 1 && P.ground && P.ads < 0.5 ? 'AK_Walk' : 'AK_Idle');
+    VM.A.AK_Walk.setEffectiveTimeScale(clamp(hs2 / 7, 0.7, 1.4));
+    vmWeights(dt); VM.mixer.update(game.state === 'paused' ? 0 : dt);
+    // the old magazine leaves the gun and falls
+    if (P.reloading > 0 && !P.magDropped && P.reloadMax - P.reloading > 0.55) { P.magDropped = true; dropMag(); }
+    // hip pose with weapon sway, then blend to sights: rotate the barrel onto the view axis and lift the front post to the crosshair
+    VM.swayX = THREE.MathUtils.lerp(VM.swayX || 0, -(pad.rx * 0.02) + (P.lookDX || 0) * -0.0004, Math.min(1, dt * 8));
+    VM.holder.quaternion.copy(VM.baseQ); VM.holder.position.copy(VM_HIP).add(new THREE.Vector3(bobX * 0.4 + VM.swayX, bobY * 0.35, P.kick * 0.05));
+    if (P.ads > 0.01) {
+      VM.holder.updateMatrixWorld(true);
+      const m = camera.worldToLocal(VM.muzzle.getWorldPosition(new THREE.Vector3())), r = camera.worldToLocal(VM.rif.getWorldPosition(new THREE.Vector3()));
+      const q = new THREE.Quaternion().setFromUnitVectors(m.clone().sub(r).normalize(), new THREE.Vector3(0, 0, -1));
+      VM.holder.quaternion.premultiply(new THREE.Quaternion().slerp(q, P.ads));
+      VM.holder.updateMatrixWorld(true);
+      const m2 = camera.worldToLocal(VM.muzzle.getWorldPosition(new THREE.Vector3()));
+      VM.holder.position.x -= m2.x * P.ads; VM.holder.position.y -= (m2.y + SIGHT_H) * P.ads;
+    }
+  }
+  P.lookDX = 0;
+  if (flash.visible) { flash.position.copy(muzzleWorld()).addScaledVector(new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion), 0.04); flash.userData.t -= dt; if (flash.userData.t <= 0) flash.visible = false; }
   flashLight.intensity *= Math.pow(0.0001, dt);
 
   // effects
@@ -937,4 +923,4 @@ camera.position.set(0, 1.7, 12);
 frame();
 addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); composer.setSize(innerWidth, innerHeight); bloom.setSize(innerWidth, innerHeight); });
 // test hook for automated screenshots
-window.__siege = { game, P, aliens, spawnAlien, start, fire, TYPES, kill, damageAlien };
+window.__siege = { game, P, aliens, spawnAlien, start, fire, TYPES, kill, damageAlien, VM, reload };

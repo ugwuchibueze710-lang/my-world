@@ -61,3 +61,5 @@ button small { font-size: 10px; letter-spacing: 1px; opacity: .7; }
 .lb td { padding: 4px 6px; text-align: left; border-top: 1px solid rgba(255, 255, 255, .06); } .lb tr.me td { color: var(--amber); }
 .final { display: flex; justify-content: center; gap: 28px; margin: 18px 0 8px; } #o-rank { color: var(--amber); }
 @media (max-width: 760px) { .controls { grid-template-columns: 1fr; } #health .bar { width: 120px; } #top { gap: 12px; padding: 6px 10px; } #top b { font-size: 16px; } }
+
+.credit { font-size: 11px; color: var(--mute); margin-top: 14px; } .credit a { color: var(--cyan); }
