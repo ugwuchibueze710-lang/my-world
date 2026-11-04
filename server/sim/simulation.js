@@ -512,7 +512,7 @@ export class Simulation {
     // so young realms fill up, raise armies and come to blows within hours instead of days
     for (const k of this.kingdoms.values()) {
       if (k.pop >= SETTLER_POP || this.realTime - (k.lastSettlers ?? -SETTLER_SECS * 0.5) < SETTLER_SECS) continue;
-      if (k.food / Math.max(1, k.pop) < 4) continue;
+      if (k.food / Math.max(1, k.pop) < 2) continue;
       k.lastSettlers = this.realTime;
       const a = r() * 6.283;
       let x = k.x + Math.cos(a) * 260, z = k.z + Math.sin(a) * 260;

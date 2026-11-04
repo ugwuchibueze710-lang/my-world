@@ -52,12 +52,15 @@ export class Buildings {
       new THREE.PlaneGeometry(0.9, 1.0).rotateY(Math.PI).translate(-1.4, 2.0, -2.51), new THREE.PlaneGeometry(0.9, 1.0).translate(0, 0, 0).rotateY(Math.PI / 2).translate(3.01, 2.0, 0),
     ]);
     const chimGeo = new THREE.BoxGeometry(0.8, 2.4, 0.8).translate(1.6, 5.2, 0.8);
+    // the front door (people enter and leave only here; matches the simulation's doorway at local +z)
+    const doorGeo = mergeGeometries([new THREE.BoxGeometry(1.0, 2.05, 0.08).translate(0, 1.02, 2.52), new THREE.BoxGeometry(1.25, 0.14, 0.12).translate(0, 2.1, 2.53)]);
     this.houseWalls = new THREE.InstancedMesh(wallGeo, new THREE.MeshStandardMaterial({ map: pt, roughness: 0.95 }), MAX_HOUSES);
     this.houseRoofs = new THREE.InstancedMesh(roofGeo, new THREE.MeshStandardMaterial({ map: rt, roughness: 0.85 }), MAX_HOUSES);
     this.houseChim = new THREE.InstancedMesh(chimGeo, this.stone, MAX_HOUSES);
+    this.houseDoor = new THREE.InstancedMesh(doorGeo, new THREE.MeshStandardMaterial({ color: 0x4a2f1a, roughness: 0.85 }), MAX_HOUSES);
     this.winMat = new THREE.MeshBasicMaterial({ color: 0xffb35c, transparent: true, opacity: 0.0, fog: true });
     this.houseWin = new THREE.InstancedMesh(winGeo, this.winMat, MAX_HOUSES);
-    for (const m of [this.houseWalls, this.houseRoofs, this.houseChim, this.houseWin]) { m.count = 0; m.castShadow = m !== this.houseWin; m.receiveShadow = true; m.frustumCulled = false; this.group.add(m); }
+    for (const m of [this.houseWalls, this.houseRoofs, this.houseChim, this.houseWin, this.houseDoor]) { m.count = 0; m.castShadow = m !== this.houseWin; m.receiveShadow = true; m.frustumCulled = false; this.group.add(m); }
     // interiors (house-local coordinates match the simulation's bed positions)
     const box = (w, h, d, x, y, z) => new THREE.BoxGeometry(w, h, d).translate(x, y + h / 2, z);
     const nonIdx = (gs) => mergeGeometries(gs.map((g) => g.toNonIndexed()));
@@ -201,7 +204,7 @@ export class Buildings {
           S.set(0.85 + hash * 0.45, 0.9 + hash * 0.3, 0.85 + ((hash * 7) % 1) * 0.4);
           P.set(x, y - 0.2, z); Q.setFromAxisAngle(Y, (rot || 0) + Math.PI / 2);
           M.compose(P, Q, S);
-          this.houseWalls.setMatrixAt(n, M); this.houseRoofs.setMatrixAt(n, M); this.houseChim.setMatrixAt(n, M); this.houseWin.setMatrixAt(n, M);
+          this.houseWalls.setMatrixAt(n, M); this.houseDoor.setMatrixAt(n, M); this.houseRoofs.setMatrixAt(n, M); this.houseChim.setMatrixAt(n, M); this.houseWin.setMatrixAt(n, M);
           C.setHSL(0.08 + hash * 0.05, 0.25 + hash * 0.2, 0.75 + hash * 0.15); this.houseWalls.setColorAt(n, C);
           C.setHSL(hash < 0.6 ? 0.02 + hash * 0.03 : 0.58, hash < 0.6 ? 0.45 : 0.08, 0.5 + hash * 0.2); this.houseRoofs.setColorAt(n, C);
           this.housePositions.push([x, z, k.id, (rot || 0) + Math.PI / 2, S.x, S.z]);
@@ -211,7 +214,7 @@ export class Buildings {
         }
       }
       this.cut.clear();
-      for (const m of [this.houseWalls, this.houseRoofs, this.houseChim, this.houseWin, ...this.interiors]) {
+      for (const m of [this.houseWalls, this.houseDoor, this.houseRoofs, this.houseChim, this.houseWin, ...this.interiors]) {
         m.count = n; m.instanceMatrix.needsUpdate = true; if (m.instanceColor) m.instanceColor.needsUpdate = true;
       }
     }
