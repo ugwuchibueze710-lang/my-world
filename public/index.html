@@ -1,110 +1,49 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
-  <title>My World — The Endless Kingdoms</title>
-  <meta name="description" content="An autonomous 3D world where kingdoms are born, grow, starve, survive storms and wage war forever." />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@500;700;900&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/css/style.css" />
-  <script type="importmap">
-    { "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }
-  </script>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neon Hive</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/css/style.css">
+  <script type="importmap">{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }</script>
 </head>
 <body>
-  <canvas id="scene"></canvas>
-  <div id="flash"></div>
-  <div id="labels"></div>
+  <div id="scene"></div>
 
-  <div id="loading">
-    <div class="load-inner">
-      <div class="crest">♛</div>
-      <h1>The Endless Kingdoms</h1>
-      <p id="load-msg">Forging the continent…</p>
-      <div class="bar"><div id="load-bar"></div></div>
-    </div>
-  </div>
-
-  <header id="topbar">
-    <div class="brand"><span class="crest-sm">♛</span> The Endless Kingdoms</div>
-    <div class="clock">
-      <div id="date">Year 1 · Spring · Day 1</div>
-      <div id="hour">06:00</div>
-    </div>
+  <header id="hud">
+    <div class="brand">NEON<span>HIVE</span></div>
     <div class="stats">
-      <div class="stat"><span id="s-pop">0</span><label>People</label></div>
-      <div class="stat"><span id="s-king">0</span><label>Kingdoms</label></div>
-      <div class="stat"><span id="s-wars">0</span><label>At war</label></div>
-      <div class="stat"><span id="s-births">0</span><label>Born</label></div>
-      <div class="stat"><span id="s-deaths">0</span><label>Died</label></div>
-      <div class="stat wide"><span id="s-capital">—</span><label>Capital of the world</label></div>
+      <div><b id="s-level">1</b><small>LEVEL</small></div>
+      <div><b id="s-minds">1</b><small>MINDS</small></div>
+      <div><b id="s-solved">0</b><small>SOLVED</small></div>
+      <div><b id="s-failed">0</b><small>FAILED</small></div>
+      <div><b id="s-assists">0</b><small>YOUR ASSISTS</small></div>
     </div>
-    <div class="scale" id="scale">1 sec = 1 hr</div>
+    <div id="mode"></div>
   </header>
 
-  <aside id="realms" class="panel">
-    <div class="panel-head"><h2>Realms</h2><button class="icon" id="realms-toggle" title="Collapse">–</button></div>
-    <div id="realm-list"></div>
-  </aside>
-
-  <aside id="inspector" class="panel hidden">
-    <div class="panel-head"><h2 id="insp-title">—</h2><button class="icon" id="insp-close" title="Close">✕</button></div>
-    <div id="insp-body"></div>
-  </aside>
-
-  <section id="chronicle" class="panel">
-    <div class="panel-head">
-      <h2>Chronicle</h2>
-      <div class="chips">
-        <button class="chip on" data-f="major">Major</button>
-        <button class="chip" data-f="all">Everything</button>
-      </div>
-    </div>
-    <div id="feed"></div>
+  <section id="puzzle">
+    <div class="p-head"><span id="p-level">LEVEL 1</span><span id="p-title">—</span></div>
+    <pre id="p-prompt">Connecting to the hive…</pre>
+    <div id="p-hint"></div>
+    <div id="p-answer"></div>
+    <div class="timer"><div id="p-timer"></div></div>
+    <div id="p-tried"></div>
   </section>
 
-  <div id="minimap-wrap" class="panel">
-    <canvas id="minimap" width="220" height="220"></canvas>
-    <div class="mm-legend"><span>N ↑</span><span id="mm-weather"></span></div>
-  </div>
+  <aside id="feed"><h3>HIVE LOG</h3><ul id="feed-list"></ul></aside>
 
-  <div id="movie">
-    <div class="lb top"></div><div class="lb bottom"></div>
-    <div id="mv-title"></div>
-    <div id="mv-cap"></div>
-    <div id="mv-sub"></div>
-    <div id="mv-controls">
-      <button class="btn" id="mv-next" title="Cut to another shot">Next shot ▸</button>
-      <button class="btn" id="mv-info" title="Kingdom details">Info</button>
-      <button class="btn on" id="mv-god" title="Back to the free camera">⚡ God mode</button>
-    </div>
-  </div>
+  <form id="help" autocomplete="off">
+    <label for="help-input">HELP THE HIVE</label>
+    <input id="help-input" maxlength="80" placeholder="Know the answer? Type it here…">
+    <button type="submit">TRANSMIT</button>
+    <div id="help-result"></div>
+  </form>
 
-  <div id="toolbar">
-    <button class="tool on" id="t-narrator" title="Cinematic narrator reads the chronicle in God mode">🎙 Narrator</button>
-    <button class="tool on" id="t-territory" title="Show kingdom borders">Borders</button>
-    <button class="tool on" id="t-labels" title="Show names">Names</button>
-    <button class="tool" id="t-overview" title="See the whole world">World view</button>
-    <button class="tool" id="t-help" title="Controls">?</button>
-  </div>
+  <div id="splash"><div><h1>NEON<span>HIVE</span></h1><p>One AI. Every puzzle it solves, it copies itself.<br>The puzzles get harder. The hive gets bigger.</p><button id="enter">ENTER</button></div></div>
 
-  <div id="help" class="panel hidden">
-    <div class="panel-head"><h2>How to watch</h2><button class="icon" id="help-close">✕</button></div>
-    <ul>
-      <li><b>Scroll / pinch</b> zoom from the whole continent down to a single person</li>
-      <li><b>Left-drag</b> move around · <b>Right-drag</b> rotate &amp; tilt</li>
-      <li><b>Click a kingdom</b> (castle, name or realm list) to watch it as a <b>movie</b>; press <b>⚡ God mode</b> to return</li>
-      <li><b>Click</b> a person to inspect them · <b>Double-click</b> the ground to fly there</li>
-      <li>Sound starts with your first click (browsers require one click before any audio)</li>
-      <li>Click the <b>minimap</b> to jump anywhere</li>
-      <li>Nobody is scripted: every person decides for themselves when to work, eat, drink, marry, flee, fight or rebel. The weather is random.</li>
-    </ul>
-  </div>
-
-  <div id="conn" class="hidden">Reconnecting to the world…</div>
-
-  <script type="module" src="/js/main.js"></script>
+  <script type="module" src="/js/app.js"></script>
 </body>
 </html>
