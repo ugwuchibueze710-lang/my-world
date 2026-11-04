@@ -1421,6 +1421,13 @@ export class Simulation {
         }
         continue;
       }
+      // the breaking point: past this much hatred no truce or calculation holds a king back
+      if (rel.state !== 'ally' && (rel.tension || 0) >= 85 && k.fighters >= 3 && k.army.state === 'none' && r() < 0.35) {
+        const broke = this.realTime < rel.truceUntil;
+        rel.truceUntil = back.truceUntil = 0;
+        this.declareWar(k, o, broke ? 'and tears up the truce — the insults can no longer be borne' : 'because the hatred can no longer be contained');
+        break;
+      }
       if (rel.state === 'ally' || this.realTime < rel.truceUntil) continue;
       if (d > 4200 || k.fighters < 3 || k.army.state !== 'none') continue;
       const fpc = k.food / Math.max(1, k.pop), ofpc = o.food / Math.max(1, o.pop);
