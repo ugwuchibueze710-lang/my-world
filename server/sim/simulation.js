@@ -707,8 +707,10 @@ export class Simulation {
         p.task = { type: 'sleep', phase: 1, t: 0, rot: th }; p.thought = 'Asleep beside mother'; return;
       }
       if (p.task?.type === 'sleep') { p.task = null; p.indoors = false; }
-      const hx = m && m.alive ? m.x : k.x, hz = m && m.alive ? m.z : k.z;
-      p.x += (hx + 0.6 - p.x) * Math.min(1, dt * 4); p.z += (hz + 0.4 - p.z) * Math.min(1, dt * 4);
+      // held against the mother's chest, facing the way she faces
+      const mh = m && m.alive ? m.heading || 0 : 0;
+      const hx = m && m.alive ? m.x + Math.sin(mh) * 0.28 : k.x, hz = m && m.alive ? m.z + Math.cos(mh) * 0.28 : k.z;
+      p.x = hx; p.z = hz; p.heading = mh;
       p.state = m && m.alive ? (m.state === STATE.REST ? STATE.REST : STATE.WALK) : STATE.IDLE;
       if (p.satiety < 0.5 && k.food >= 0.3 && (!m || Math.hypot(hx - k.x, hz - k.z) < k.radius + 100)) { k.food -= 0.3; p.satiety = 1; }
       if (m && m.alive) p.hydration = Math.max(p.hydration, m.hydration); else if (p.hydration < 0.5 && k.hasWell) p.hydration = 1;
