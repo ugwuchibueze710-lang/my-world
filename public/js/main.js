@@ -122,6 +122,7 @@ class App {
     this.buildings = new Buildings(this.scene, this.world);
     this.people = new People(this.scene, this.world);
     this.chars = new Characters(this.scene, this.world, this.people);
+    this.people.surface = (x, z) => this.terrain.surfaceHeight(x, z);
     this.weather = new WeatherFX(this.scene, this.world);
     this.weather.coldAt = (x, z) => {
       const ci = this.world.cellIndex(x, z); if (ci < 0) return false;

@@ -27,12 +27,16 @@ export function maybeTalk(sim) {
   for (let t = 0; t < tries; t++) {
     const a = ppl[Math.floor(r() * ppl.length)];
     if (!a.alive || a.ageY < 4 || a.talkUntil > sim.realTime) continue;
+    // nobody chats with someone asleep; a couple in the same bed may whisper before sleep
+    const asleep = (p) => p.task?.type === 'sleep' && p.task.phase === 1;
     if (a.state === STATE.MARCH || a.state === STATE.MIGRATE) { if (r() > 0.15) continue; }
     let b = null;
     const sp = a.spouseId ? sim.byId.get(a.spouseId) : null;
-    if (sp && sp.alive && sp.talkUntil <= sim.realTime && Math.hypot(sp.x - a.x, sp.z - a.z) < 12) b = sp; // couples talk to each other first
+    if (sp && sp.alive && sp.talkUntil <= sim.realTime && Math.hypot(sp.x - a.x, sp.z - a.z) < 12 && asleep(sp) === asleep(a)) b = sp; // couples talk to each other first
+    if (asleep(a) && !b) continue;
+    if (asleep(a) && r() > 0.25) continue; // pillow talk is rare
     if (!b) sim.spatial.query(a.x, a.z, 6, (q) => {
-      if (q === a || q.ageY < 4 || q.talkUntil > sim.realTime || !q.alive) return;
+      if (q === a || q.ageY < 4 || q.talkUntil > sim.realTime || !q.alive || asleep(q)) return;
       b = q; return false;
     });
     if (!b) continue;
@@ -69,7 +73,7 @@ function startConversation(sim, a, b, convo) {
     const dur = convo.lines.length * 3.4 + 1;
     a.talkUntil = b.talkUntil = sim.realTime + dur + 20;
     for (const [x, y] of [[a, b], [b, a]]) {
-      const busy = x.task && ['fight', 'flee', 'march', 'migrate', 'defend', 'brawl', 'vendetta', 'sleep'].includes(x.task.type);
+      const busy = x.task && ['fight', 'flee', 'march', 'migrate', 'defend', 'brawl', 'vendetta', 'sleep', 'throne'].includes(x.task.type);
       if (!busy && x.ageY >= 3) { x.task = { type: 'talk', partner: y.id, until: sim.realTime + dur, t: 0 }; x.thought = `Talking with ${y.name}`; }
     }
     const c = { id: ++sim.talkSeq, a: a.id, b: b.id, k: a.kingdom, t: +sim.realTime.toFixed(1), lines: convo.lines };

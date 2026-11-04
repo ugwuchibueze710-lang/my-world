@@ -93,7 +93,7 @@ export class Buildings {
       // timber longhall with palisade
       w.push(box(14, 5, 8, 0, 0, 0));
       r.push(new THREE.CylinderGeometry(0.01, 9.5, 5, 4, 1).rotateY(Math.PI / 4).scale(1.05, 1, 0.62).translate(0, 7.4, 0));
-      for (let a = 0; a < 40; a++) { const t = (a / 40) * Math.PI * 2; if (a > 8 && a < 11) continue; w.push(cyl(0.3, 0.35, 4.5, Math.cos(t) * 17, -0.5, Math.sin(t) * 17, 5)); }
+      for (let a = 0; a < 40; a++) { const t = (a / 40) * Math.PI * 2; if (a > 8 && a < 12) continue; /* gate gap facing local +z */ w.push(cyl(0.3, 0.35, 4.5, Math.cos(t) * 17, -0.5, Math.sin(t) * 17, 5)); }
     } else if (tier === 2) {
       s.push(box(12, 15, 12, 0, 0, 0), ...crenels(12, 12, 15));
       s.push(cyl(3.2, 3.6, 19, 7, 0, 7), cyl(3.2, 3.6, 19, -7, 0, -7));
@@ -107,7 +107,7 @@ export class Buildings {
       r.push(cone(5.2, 9, K / 2, KH + 9, K / 2), cone(5.2, 9, -K / 2, KH + 9, -K / 2), cone(5.2, 7, K / 2, KH + 6, -K / 2), cone(5.2, 7, -K / 2, KH + 6, K / 2));
       s.push(...wallRing(R, 9, 2.2, 0));
       for (const [x, z] of [[R, R], [-R, R], [R, -R], [-R, -R]]) { s.push(cyl(5, 5.6, 14, x, 0, z)); r.push(cone(6.3, 8, x, 14, z)); }
-      s.push(box(12, 14, 6, -6, 0, R + 2), box(12, 14, 6, 6, 0, R + 2)); // gatehouse
+      s.push(box(8, 14, 6, -9, 0, R + 2), box(8, 14, 6, 9, 0, R + 2), box(10, 4, 6, 0, 10, R + 2)); // gatehouse towers and arch over an open gate
       if (tier >= 4) {
         s.push(cyl(6, 7, KH + 22, 0, 0, 0, 16)); r.push(cone(8, 14, 0, KH + 22, 0, 16));
         for (const [x, z] of [[0, R], [0, -R], [R, 0], [-R, 0]]) if (z !== R) { s.push(cyl(4.5, 5, 13, x, 0, z)); r.push(cone(5.6, 7, x, 13, z)); }

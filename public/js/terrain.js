@@ -28,6 +28,7 @@ export class Terrain {
       ch.lod = 3;
       this.group.add(ch.mesh);
       this.chunks.push(ch);
+      (this.byIJ ||= new Map()).set(i + j * CHUNKS, ch);
     }
   }
 
@@ -216,6 +217,21 @@ export class Terrain {
     g.setIndex(idx);
     g.computeBoundingSphere(); g.computeBoundingBox();
     return g;
+  }
+
+  // height of the terrain exactly as it is currently DRAWN (same triangles, same LOD), so feet touch the visible ground
+  surfaceHeight(x, z) {
+    const i = Math.floor((x + HALF) / CSIZE), j = Math.floor((z + HALF) / CSIZE);
+    const ch = this.byIJ?.get(i + j * CHUNKS);
+    if (!ch) return this.world.heightAt(x, z);
+    const S = LODS[ch.lod], step = CSIZE / S;
+    const pos = ch.mesh.geometry.attributes.position.array;
+    let fx = (x - ch.x0) / step, fz = (z - ch.z0) / step;
+    let gi = Math.min(S - 1, Math.max(0, Math.floor(fx))), gj = Math.min(S - 1, Math.max(0, Math.floor(fz)));
+    const tx = Math.min(1, Math.max(0, fx - gi)), tz = Math.min(1, Math.max(0, fz - gj));
+    const H = (ii, jj) => pos[((jj * (S + 1)) + ii) * 3 + 1];
+    const ha = H(gi, gj), hb = H(gi + 1, gj), hc = H(gi, gj + 1), hd = H(gi + 1, gj + 1);
+    return tx + tz <= 1 ? ha + (hb - ha) * tx + (hc - ha) * tz : hd + (hc - hd) * (1 - tx) + (hb - hd) * (1 - tz);
   }
 
   update(camera, budgetMs = 6) {

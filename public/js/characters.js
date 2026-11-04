@@ -5,11 +5,28 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { STATE } from '/shared/constants.js';
+import { findMouth, attachMouth } from './mouth.js';
+import { MeshoptDecoder } from 'three/addons/libs/meshopt_decoder.module.js';
 import { retargetClips } from './retarget.js';
 
 const ROLE = { COMMONER: 0, SOLDIER: 1, RULER: 2, CONSORT: 3, ROYAL: 4, GENERAL: 5 };
 const hash = (n, k = 1) => { const x = Math.sin(n * 12.9898 * k + k * 78.233) * 43758.5453; return x - Math.floor(x); };
 
+export const THRONE = { scale: 1.3, rot: 0, seatY: 0.04, back: 0.42 };
+const LOOK_GLSL = `
+uniform float uHue; uniform float uSat; uniform vec3 uTone;
+vec3 lkHsv(vec3 c){vec4 K=vec4(0.,-1./3.,2./3.,-1.);vec4 p=mix(vec4(c.bg,K.wz),vec4(c.gb,K.xy),step(c.b,c.g));vec4 q=mix(vec4(p.xyw,c.r),vec4(c.r,p.yzx),step(p.x,c.r));float d=q.x-min(q.w,q.y);return vec3(abs(q.z+(q.w-q.y)/(6.*d+1e-10)),d/(q.x+1e-10),q.x);}
+vec3 lkRgb(vec3 c){vec4 K=vec4(1.,2./3.,1./3.,3.);vec3 p=abs(fract(c.xxx+K.xyz)*6.-K.www);return c.z*mix(K.xxx,clamp(p-K.xxx,0.,1.),c.y);}
+vec3 personLook(vec3 col){
+  vec3 g = pow(max(col, 0.0), vec3(1.0/2.2)); // judge colours perceptually
+  vec3 h = lkHsv(g);
+  float warm = 1.0 - smoothstep(0.11, 0.15, h.x) * (1.0 - smoothstep(0.93, 0.97, h.x));
+  float skin = warm * smoothstep(0.12, 0.22, h.y) * (1.0 - smoothstep(0.62, 0.75, h.y)) * smoothstep(0.35, 0.55, h.z);
+  float cloth = (1.0 - warm) * smoothstep(0.18, 0.3, h.y);
+  if (uHue >= 0.0 && cloth > 0.0) { vec3 d = lkRgb(vec3(fract(uHue + h.x * 0.15), clamp(h.y * uSat, 0.0, 1.0), h.z)); g = mix(g, d, cloth); }
+  g = mix(g, g * uTone, skin);
+  return pow(g, vec3(2.2));
+}`;
 const SKIN = [[0.96, 0.8, 0.67], [0.9, 0.7, 0.55], [0.78, 0.57, 0.42], [0.6, 0.42, 0.3], [0.45, 0.3, 0.2], [0.32, 0.21, 0.14]];
 const HAIR = [[0.08, 0.06, 0.05], [0.22, 0.13, 0.07], [0.45, 0.28, 0.12], [0.7, 0.5, 0.25], [0.55, 0.18, 0.08], [0.12, 0.1, 0.1]];
 const CLOTH = [[0.45, 0.34, 0.22], [0.36, 0.4, 0.28], [0.55, 0.5, 0.42], [0.3, 0.32, 0.4], [0.5, 0.25, 0.2], [0.62, 0.58, 0.48], [0.25, 0.3, 0.22]];
@@ -142,7 +159,21 @@ export class Characters {
     };
     this.ready = true;
     this.ualScene = gltf.scene; this.ualClips = gltf.animations;
-    this.g3d = new Map(); this.g3dLoading = new Set(); this.loader = new GLTFLoader();
+    this.g3d = new Map(); this.g3dLoading = new Set(); this.loader = new GLTFLoader().setMeshoptDecoder(MeshoptDecoder);
+    // thrones (Avramania CC0 chair, scaled up and gilded) on a rug, for rulers holding court
+    this.thrones = new Map();
+    Promise.all(['chair', 'rug'].map((n) => this.loader.loadAsync(`/assets/world/${n}.glb`))).then(([c, r]) => {
+      const g = new THREE.Group();
+      const chair = c.scene; chair.scale.setScalar(THRONE.scale); chair.rotation.y = THRONE.rot;
+      chair.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; o.material = o.material.clone(); o.material.color.set(0xf2d48a); } });
+      const rug = r.scene; rug.scale.set(1.6, 1, 2.2); rug.position.set(0, 0.01, 0.9); rug.traverse((o) => { if (o.isMesh) o.receiveShadow = true; });
+      g.add(chair, rug); this.throneProto = g;
+    }).catch(() => {});
+  }
+  throneFor(id) {
+    let t = this.thrones.get(id);
+    if (!t && this.throneProto) { t = this.throneProto.clone(); this.scene.add(t); this.thrones.set(id, t); }
+    return t;
   }
 
   makeSlot() {
@@ -233,7 +264,7 @@ export class Characters {
         const src = SkeletonUtils.clone(this.ualScene), probe = SkeletonUtils.clone(g.scene);
         const clips = retargetClips(src, this.ualClips, probe);
         g.scene.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
-        this.g3d.set(t, { scene: g.scene, clips });
+        this.g3d.set(t, { scene: g.scene, clips, mouth: findMouth(SkeletonUtils.clone(g.scene), t) });
       }, undefined, () => console.warn('could not load character', t));
     }
     return 'ual';
@@ -241,7 +272,23 @@ export class Characters {
   makeG3DSlot(type) {
     const model = this.g3d.get(type);
     const root = SkeletonUtils.clone(model.scene);
-    root.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false; } });
+    // every person gets their own dyed clothes, skin tone and build: clone materials with a per-slot look shader
+    const look = { uHue: { value: 0 }, uSat: { value: 1 }, uTone: { value: new THREE.Color(1, 1, 1) } };
+    root.traverse((o) => {
+      if (!o.isMesh) return;
+      o.castShadow = true; o.receiveShadow = true; o.frustumCulled = false;
+      o.material = (Array.isArray(o.material) ? o.material : [o.material]).map((m0) => {
+        const m = m0.clone();
+        m.onBeforeCompile = (sh) => {
+          Object.assign(sh.uniforms, look);
+          sh.fragmentShader = sh.fragmentShader.replace('#include <common>', '#include <common>\n' + LOOK_GLSL)
+            .replace('#include <map_fragment>', '#include <map_fragment>\ndiffuseColor.rgb = personLook(diffuseColor.rgb);');
+        };
+        m.customProgramCacheKey = () => 'g3d-look';
+        return m;
+      });
+      if (o.material.length === 1) o.material = o.material[0];
+    });
     const bones = {}; root.traverse((o) => { if (o.isBone) bones[o.name] = o; });
     root.updateMatrixWorld(true);
     const wp = (n, dx, dy, dz) => { const v = (bones[n] || root).getWorldPosition(new THREE.Vector3()); return [v.x + dx, v.y + dy, v.z + dz]; };
@@ -262,17 +309,30 @@ export class Characters {
       if (!/Loop/.test(clip.name) && !['Sword_Attack', 'Fixing_Kneeling', 'Interact', 'Punch_Cross', 'Sword_Idle'].includes(clip.name)) { act.setLoop(THREE.LoopOnce, 1); act.clampWhenFinished = true; }
       actions[clip.name] = act;
     }
+    const mouth = attachMouth(root, model.mouth);
     root.visible = false; this.scene.add(root);
     const uniforms = { uMood: { value: 0 }, uBlink: { value: 0 }, uMouth: { value: 0 } };
-    return { kind: type, root, mixer, actions, uniforms, accentMat, a, agent: 0, current: null, blinkT: 0, scale: [1, 1, 1] };
+    return { look, mouth, kind: type, root, mixer, actions, uniforms, accentMat, a, agent: 0, current: null, blinkT: 0, scale: [1, 1, 1] };
   }
   dressG3D(slot, ag) {
     const role = (ag.fl >> 3) & 7, soldier = role === ROLE.SOLDIER || role === ROLE.GENERAL;
     const kc = this.people.kColors.get(ag.k) || new THREE.Color(0.6, 0.6, 0.6);
     slot.accentMat.color.copy(kc);
     slot.a.sword.visible = soldier; slot.a.shield.visible = soldier;
-    const v = 0.95 + hash(ag.id, 11) * 0.09;
-    slot.scale = [v * (0.96 + hash(ag.id, 12) * 0.08), v, v * (0.96 + hash(ag.id, 12) * 0.08)];
+    // individual build: height and frame vary person to person
+    const ageG = (ag.fl >> 1) & 3;
+    const v = ageG <= 1 ? 0.97 + hash(ag.id, 11) * 0.06 : 0.9 + hash(ag.id, 11) * 0.18;
+    const w = 0.9 + hash(ag.id, 12) * 0.24;
+    slot.scale = [v * w, v, v * (0.95 + (w - 0.9) * 0.6)];
+    // dyed clothes (a share leaning to the kingdom's colours), and a skin tone drawn from the kingdom's ancestry plus personal variation
+    const L = slot.look; if (L) {
+      const kh = ((kc.getHSL({}).h) || 0);
+      L.uHue.value = hash(ag.id, 31) < 0.35 ? kh : hash(ag.id, 32);
+      L.uSat.value = 0.75 + hash(ag.id, 33) * 0.5;
+      const anc = hash(ag.k * 3.7 + 1), tone = THREE.MathUtils.clamp(0.45 + anc * 0.5 + (hash(ag.id, 34) - 0.5) * 0.35, 0.35, 1.05);
+      L.uTone.value.setRGB(tone, tone * (0.93 + hash(ag.id, 35) * 0.05), tone * (0.86 + hash(ag.id, 36) * 0.08));
+      if (role === ROLE.RULER || role === ROLE.CONSORT) { L.uHue.value = -1; L.uSat.value = 1; } // royal regalia keep their original colours
+    }
     slot.dressKey = `${ag.k}|${ag.fl}|${Math.floor(ag.age)}`;
   }
 
@@ -321,6 +381,7 @@ export class Characters {
     const st = ag.st, role = (ag.fl >> 3) & 7, soldier = role === 1 || role === 5;
     const talking = ag.ex & 32;
     if (((ag.fl >> 1) & 3) === 0) return ['Idle_Loop', 1];
+    if ((ag.ex & 128) && !ag.mv) return [ag.mouthUntil > this._now ? 'Sitting_Talking_Loop' : 'Sitting_Idle_Loop', 1]; // on the throne
     if ((ag.ex & 64) && st === STATE.REST) return ['Idle_Loop', 0.25]; // asleep in bed
     if ((ag.ex & 1) && !ag.mv) return ['Death01', 1]; // sick: lying down
     if (st === STATE.FIGHT) return ag.mv && speed > 1.5 ? ['Sprint_Loop', 1] : [soldier ? 'Sword_Attack' : (ag.id % 2 ? 'Punch_Cross' : 'Punch_Jab'), 1.1];
@@ -348,6 +409,7 @@ export class Characters {
   // called every frame after people.update has interpolated agent positions
   update(dt, now, time, camera, focus) {
     if (!this.ready) return this.hidden;
+    this._now = now;
     this.fpsAvg = this.fpsAvg * 0.97 + (1 / Math.max(dt, 1e-3)) * 0.03;
     if (this.fpsAvg < 34 && this.max > 12) this.max -= 1; else if (this.fpsAvg > 55 && this.max < 70) this.max += 0.25;
     const cp = camera.position;
@@ -417,22 +479,30 @@ export class Characters {
         s.root.scale.set(...s.scale);
       } else {
       if (((ag.fl >> 1) & 3) === 0) { s.root.position.x += Math.cos(ag.hd) * 0.25; s.root.position.y += 0.7; }
+      if ((ag.ex & 128) && !ag.mv) { s.root.position.y += THRONE.seatY; s.root.position.x -= Math.sin(ag.hd) * THRONE.back; s.root.position.z -= Math.cos(ag.hd) * THRONE.back; }
       s.root.rotation.set(0, ag.hd, 0, 'XYZ');
       s.root.scale.set(...s.scale);
       }
       // face: mood, blink, lip sync (same signals as the instanced figures)
       const u = s.uniforms;
-      if (s.kind !== 'ual') { const A = s.a, st = ag.st; A.tool.visible = !A.sword.visible && (st === STATE.FARM || st === STATE.MINE || st === STATE.BUILD) && !ag.mv; A.hoeHead.visible = st === STATE.FARM; A.pickHead.visible = st === STATE.MINE; A.hammerHead.visible = st === STATE.BUILD; continue; }
+      let mouth = 0;
+      if (ag.mouthUntil > now && !lying) mouth = Math.max(0, ag.voiced ? Math.max(ag.mouthPulse || 0, 0.2 + 0.25 * Math.sin(time * 17 + ag.ph)) : 0.45 + 0.45 * Math.sin(time * 15 + ag.ph) * Math.sin(time * 6.3));
+      if (s.kind !== 'ual') { s.mouth?.set(Math.min(1, mouth), lying ? 0 : (ag.ex >> 2) & 7, dt); const A = s.a, st = ag.st; A.tool.visible = !A.sword.visible && (st === STATE.FARM || st === STATE.MINE || st === STATE.BUILD) && !ag.mv; A.hoeHead.visible = st === STATE.FARM; A.pickHead.visible = st === STATE.MINE; A.hammerHead.visible = st === STATE.BUILD; continue; }
       u.uMood.value = (ag.ex >> 2) & 7;
       s.blinkT -= dt; if (s.blinkT < -0.14) s.blinkT = 2 + hash(ag.id + time) * 4;
       u.uBlink.value = s.blinkT < 0 ? 1 : 0;
-      let mouth = 0;
-      if (ag.mouthUntil > now) mouth = ag.voiced ? Math.max(ag.mouthPulse || 0, 0.2 + 0.25 * Math.sin(time * 17 + ag.ph)) : 0.45 + 0.45 * Math.sin(time * 15 + ag.ph) * Math.sin(time * 6.3);
-      u.uMouth.value = lying ? 0 : Math.max(0, mouth);
+      u.uMouth.value = mouth;
       // tools follow the job
       const A = s.a, st = ag.st, soldier = A.sword.visible;
       A.tool.visible = !soldier && (st === STATE.FARM || st === STATE.MINE || st === STATE.BUILD) && !ag.mv;
       A.hoeHead.visible = st === STATE.FARM; A.pickHead.visible = st === STATE.MINE; A.hammerHead.visible = st === STATE.BUILD;
+    }
+    // thrones appear under seated rulers (whether drawn as a full character or not)
+    for (const [id, t] of this.thrones) t.visible = false;
+    for (const ag of this.people.list) {
+      if (!(ag.ex & 128) || ag.mv) continue;
+      const t = this.throneFor(ag.id); if (!t) break;
+      t.visible = true; t.position.set(ag.x - Math.sin(ag.hd) * THRONE.back, ag.y, ag.z - Math.cos(ag.hd) * THRONE.back); t.rotation.y = ag.hd;
     }
     return this.hidden;
   }

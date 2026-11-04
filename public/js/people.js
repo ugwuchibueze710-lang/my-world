@@ -237,7 +237,9 @@ export class People {
       a.mv = moving;
       const near = showNear && Math.abs(nx - cp.x) < NEAR_R && Math.abs(nz - cp.z) < NEAR_R;
       if (near) {
-        if (Math.abs(nx - a.yx) > 0.4 || Math.abs(nz - a.yz) > 0.4) { a.y = w.heightAt(nx, nz); a.yx = nx; a.yz = nz; }
+        // stand on the ground exactly as drawn (avoids floating/sinking where terrain LOD simplifies)
+        if (this.surface) a.y = this.surface(nx, nz);
+        else if (Math.abs(nx - a.yx) > 0.4 || Math.abs(nz - a.yz) > 0.4) { a.y = w.heightAt(nx, nz); a.yx = nx; a.yz = nz; }
       } else if (np < MAX_ALL) {
         a.y = w.gridHeight(nx, nz);
       }

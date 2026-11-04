@@ -10,6 +10,15 @@ import { ensurePersona, socialTick, plotTick, onDeath, inheritGrudges, opOf, add
 import { tensionTick, diplomacyTick, storyteller } from './diplomacy.js';
 
 const YEAR = HOURS_PER_YEAR;
+// curtain-wall half size (tier 1: palisade radius) and keep half-extents [x, z, corner tower radius], matching buildings.js
+const WALL_R = [0, 17, 24, 34, 50];
+const KEEP = [null, [7.3, 4.3, 0], [6.5, 6.5, 3.8], [8.5, 8.5, 4.8], [11.5, 11.5, 4.8]];
+// population pace (tunable on Render without code changes)
+const GROWTH = Number(process.env.GROWTH_RATE) || 10;         // childhood passes 6x faster than the calendar
+const PREG_DAYS = Number(process.env.PREGNANCY_DAYS) || 75;   // world days from conception to birth
+const BIRTH_GAP_DAYS = Number(process.env.BIRTH_GAP_DAYS) || 60;
+const FERTILITY = Number(process.env.FERTILITY) || 2.5;        // conception chance multiplier
+const TWINS = Number(process.env.TWINS) || 0.08;
 const N = GRID * GRID;
 const OWN = 128, OCELL = WORLD_SIZE / OWN;
 const PALETTE = ['#c0392b', '#2e6fd8', '#e0a526', '#27ae60', '#8e44ad', '#16a2a2', '#d35400', '#c2185b', '#6d8a16', '#5d4fd1',
@@ -159,7 +168,7 @@ export class Simulation {
     if (!p.name) p.name = culture.person(p.sex);
     p.loyalty = 0.45 + p.genes.loyal * 0.5;
     ensurePersona(p, this.rand);
-    p.ageY = (this.time - p.birth) / YEAR;
+    p.ageY = (this.time - p.birth) / YEAR + (p.boost || 0);
     this.people.push(p); this.byId.set(p.id, p);
     const k = this.kingdoms.get(p.kingdom); if (k) k.members.add(p.id);
     return p;
@@ -333,7 +342,9 @@ export class Simulation {
     const capF = pop > this.maxPop * 0.75 ? clamp(1 - (pop - this.maxPop * 0.75) / (this.maxPop * 0.25), 0, 1) : 1;
     for (const p of this.people) {
       if (!p.alive) continue;
-      p.ageY = (this.time - p.birth) / YEAR;
+      // children grow up faster than the calendar (GROWTH_RATE x) so generations turn over within real hours
+      if (p.ageY < 16) p.boost = (p.boost || 0) + dYears * (GROWTH - 1);
+      p.ageY = (this.time - p.birth) / YEAR + (p.boost || 0);
       const a = p.ageY;
       // natural mortality (Gompertz) + childhood illness
       let hz = 0.0003 * Math.exp(0.088 * a);
@@ -347,8 +358,9 @@ export class Simulation {
         p.loyalty += (target - p.loyalty) * 0.01;
       }
       // pregnancy
+      if (p.pregnant && p.pregnant.due - this.time > PREG_DAYS * 24 * 1.06) p.pregnant.due = this.time + PREG_DAYS * 24 * 0.6; // older, longer pregnancies catch up
       if (p.pregnant && this.time >= p.pregnant.due) this.giveBirth(p);
-      else if (p.sex === 'F' && !p.pregnant && p.spouseId && a >= 16 && a <= 45 && this.time - p.lastBirth > 330 * 24) {
+      else if (p.sex === 'F' && !p.pregnant && p.spouseId && a >= 16 && a <= 45 && this.time - p.lastBirth > BIRTH_GAP_DAYS * 24) {
         const h = this.byId.get(p.spouseId);
         if (h && h.alive && h.ageY < 70 && Math.abs(h.x - p.x) < 900 && Math.abs(h.z - p.z) < 900 && !h.soldier && p.health > 40) {
           const fpc = k ? k.food / Math.max(1, k.pop) : 0;
@@ -356,12 +368,12 @@ export class Simulation {
           const love = 0.75 + Math.max(0, opOf(p, h)) / 120;
           const fert = Math.sqrt(p.genes.fert * h.genes.fert) * Math.min(1, p.nourish * 1.2) * (fpc > 1 ? 1 : 0.45) * capF * (a > 38 ? 0.55 : 1) * love;
           // a night together: ~35% chance per night for a healthy, well-fed couple (per real second in bed)
-          const perSec = inBed ? 0.0034 * fert : 0.0002 * fert;
+          const perSec = (inBed ? 0.0034 : 0.0004) * fert * FERTILITY;
           if (r() < perSec * dtReal) {
             let father = h.id;
             const lover = this.byId.get(p.affair);
             if (lover && r() < 0.3) { father = lover.id; this.secrets.push({ id: ++this.secretSeq, type: 'bastard', a: p.id, b: lover.id, t: this.realTime }); }
-            p.pregnant = { due: this.time + (262 + r() * 18) * 24, father };
+            p.pregnant = { due: this.time + PREG_DAYS * (0.95 + r() * 0.1) * 24, father };
             p.thought = 'Expecting a child';
           }
         }
@@ -372,7 +384,7 @@ export class Simulation {
   giveBirth(m) {
     const r = this.rand, k = this.kingdoms.get(m.kingdom);
     const f = this.byId.get(m.pregnant.father);
-    const twins = r() < 0.03 ? 2 : 1;
+    const twins = r() < TWINS ? 2 : 1;
     m.lastBirth = this.time; m.pregnant = null;
     for (let t = 0; t < twins; t++) {
       if (r() < 0.06 * (1.4 - m.nourish)) { this.stats.deaths++; this.cause('was stillborn'); continue; }
@@ -584,11 +596,13 @@ export class Simulation {
 
   // where someone sleeps: a real bed inside their family's house (rulers sleep in the keep)
   bedOf(p, k) {
-    if (p.id === k.rulerId || p.role === ROLE.CONSORT) return [...k.local(p.sex === 'F' ? 0.6 : -0.6, 0), 0];
+    // everyone, royals included, sleeps in a real bed inside a house (the royal family shares the first house)
     if (!k.houses.length) return [...this.homeOf(p, k), 0];
     let key = p.spouseId ? Math.min(p.id, p.spouseId) : p.id, child = false;
     if (p.ageY < 16 && !p.spouseId) { const m = this.byId.get(p.motherId) || this.byId.get(p.fatherId); if (m && m.kingdom === p.kingdom) { key = m.spouseId ? Math.min(m.id, m.spouseId) : m.id; child = true; } }
-    const h = k.houses[key % k.houses.length];
+    const royal = (q) => q && (q.id === k.rulerId || q.role === ROLE.CONSORT);
+    const kin = child ? this.byId.get(p.motherId) || this.byId.get(p.fatherId) : p;
+    const h = royal(kin) || royal(p) ? k.houses[0] : k.houses[key % k.houses.length];
     const hash = Math.abs(Math.sin(h[0] * 12.9898 + h[1] * 78.233) * 43758.5453) % 1;
     const sx = 0.85 + hash * 0.45, sz = 0.85 + ((hash * 7) % 1) * 0.4;
     let lx, lz;
@@ -634,8 +648,30 @@ export class Simulation {
     p.nourish += (Math.min(1, p.satiety * 1.5) * 0.6 + Math.min(1, p.hydration * 1.5) * 0.4 - p.nourish) * dt / 220;
     if (p.health <= 0) { this.die(p, p.lastCause || 'died'); return; }
 
+    // ---- toddlers (1-3) wander on their own little legs, staying near their mother
+    if (p.ageY >= 1 && p.ageY < 3) {
+      const m = this.byId.get(p.motherId), ma = m && m.alive;
+      if (ma && m.task?.type === 'sleep' && m.task.phase === 1) { // tucked into the family bed
+        const [bx, bz, br] = this.bedOf(p, k); p.x = bx; p.z = bz; p.heading = br; p.state = STATE.REST; p.indoors = true;
+        p.task = { type: 'sleep', phase: 1, t: 0 }; p.thought = 'Asleep'; return;
+      }
+      if (p.task?.type === 'sleep') p.task = null;
+      p.indoors = false;
+      const ax = ma ? m.x : k.x, az = ma ? m.z : k.z;
+      const far = Math.hypot(ax - p.x, az - p.z);
+      if (!p.toddle || far > 14 || (p.toddleT = (p.toddleT || 0) - dt) < 0) {
+        const a = this.rand() * 6.283, d = 1.5 + this.rand() * 5;
+        p.toddle = [ax + Math.cos(a) * d, az + Math.sin(a) * d]; p.toddleT = 3 + this.rand() * 6;
+      }
+      const moving = !this.moveTo(p, p.toddle[0], p.toddle[1], far > 14 ? 1.6 : 0.8, dt);
+      p.state = moving ? STATE.WALK : STATE.IDLE;
+      if (p.satiety < 0.5 && k.food >= 0.3) { k.food -= 0.3; p.satiety = 1; }
+      if (ma) p.hydration = Math.max(p.hydration, m.hydration); else if (p.hydration < 0.5 && k.hasWell) p.hydration = 1;
+      p.thought = ma ? `Toddling about near ${m.name}` : 'A little orphan, looked after by the village';
+      return;
+    }
     // ---- babies are carried by their mothers
-    if (p.ageY < 3) {
+    if (p.ageY < 1) {
       const m = this.byId.get(p.motherId);
       const hx = m && m.alive ? m.x : k.x, hz = m && m.alive ? m.z : k.z;
       p.x += (hx + 0.6 - p.x) * Math.min(1, dt * 4); p.z += (hz + 0.4 - p.z) * Math.min(1, dt * 4);
@@ -708,7 +744,7 @@ export class Simulation {
     if (tt === 'drink' || (tt === 'eat' && p.hydration > 0.2)) return;
     if (tt === 'talk' && !critical && p.task.until > this.realTime && e.danger < 0.4) return;
     // people finish what they start, unless survival demands otherwise
-    if (!critical && (tt === 'farm' || tt === 'mine' || tt === 'build' || tt === 'migrate' || tt === 'court' || tt === 'march' || tt === 'defend')) return;
+    if (!critical && (tt === 'throne' || tt === 'farm' || tt === 'mine' || tt === 'build' || tt === 'migrate' || tt === 'court' || tt === 'march' || tt === 'defend')) return;
     if (!critical && tt === 'rest' && p.energy < 0.9) return;
     if (tt === 'migrate' && p.satiety > 0.12 && p.hydration > 0.25) return;
     const night = this.isNight();
@@ -730,6 +766,7 @@ export class Simulation {
       opt('farm', (0.95 + (fpc < 6 ? 0.7 : 0) + (fpc < 2 ? 0.8 : 0)) * (0.5 + g.dilig) * (late ? 0 : 1) - (age > 65 ? 0.7 : 0) - (p.pregnant ? 0.3 : 0) - (late ? 9 : 0));
       opt('mine', (0.3 + k.mineralNeed) * (0.5 + g.dilig) * (p.sex === 'M' ? 1 : 0.55) * (late ? 0 : 1) - (age > 55 ? 0.6 : 0) - (late ? 9 : 0));
       if (k.needsHouse && age < 60 && !late) opt('build', 0.8 * (0.4 + g.dilig));
+      if ((p.id === k.rulerId || p.role === ROLE.CONSORT) && !late && !campaign) opt('throne', 1.5 + g.loyal * 0.3 - (fpc < 1 ? 0.8 : 0));
       if (!p.spouseId && age >= 16 && age < 50) opt('court', (0.35 + g.social * 0.8) * (night ? 0.6 : 1));
       if (fpc < 0.6 && p.loyalty < 0.42 && age >= 16 && p.role !== ROLE.RULER) opt('defect', (0.6 - p.loyalty) * 2.5 * (1 - fpc));
     }
@@ -796,6 +833,9 @@ export class Simulation {
         break;
       }
       case 'sleep': { const [bx, bz, br] = this.bedOf(p, k); t.tx = bx; t.tz = bz; t.rot = br; p.wake = 5.6 + this.rand() * 1.2; p.thought = this.isNight() ? 'Going home to bed' : 'The day is done — heading home before dark'; break; }
+      case 'throne': { // hold court: the ruler and consort sit side by side before the hall, facing the gate
+        const z = [0, 12, 18, 22, 32][k.tier]; const side = p.id === k.rulerId ? -0.9 : 0.9;
+        [t.tx, t.tz] = k.local(side, z); t.until = 40 + this.rand() * 80; p.thought = 'Holding court from the throne'; break; }
       case 'rest': { const [hx, hz] = this.homeOf(p, k); t.tx = hx; t.tz = hz; p.thought = p.sick > 0 ? 'Sick - resting at home' : 'Tired - going home to rest'; break; }
       case 'play': { const a = r() * 6.283, d = 10 + r() * 45; t.tx = k.x + Math.cos(a) * d; t.tz = k.z + Math.sin(a) * d; p.thought = 'Playing near home'; break; }
       case 'build': {
@@ -919,21 +959,82 @@ export class Simulation {
   }
 
   walkable(x, z) { const c = this.world.cellIndex(x, z); return c >= 0 && this.world.gh[c] > -2.5; }
+  // ---- solid architecture: castle curtain walls (gate on the local +z side), keeps, and houses.
+  // Shapes match the client's geometry (buildings.js) so nobody walks through a wall.
+  toLocal(k, x, z) { const c = Math.cos(k.rot || 0), s = Math.sin(k.rot || 0), dx = x - k.x, dz = z - k.z; return [dx * c - dz * s, dx * s + dz * c]; }
+  insideWalls(k, lx, lz) { const R = WALL_R[k.tier] || 0; if (!R) return false; return k.tier === 1 ? Math.hypot(lx, lz) < R : Math.abs(lx) < R && Math.abs(lz) < R; }
+  // through the gate: if the target is on the other side of the curtain wall, walk to the gate first
+  route(p, tx, tz) {
+    const k = this.kingdoms.get(p.kingdom) || this.nearKingdom(p.x, p.z);
+    for (const kk of k ? [k] : []) {
+      const R = WALL_R[kk.tier]; if (!R) continue;
+      const [plx, plz] = this.toLocal(kk, p.x, p.z), [tlx, tlz] = this.toLocal(kk, tx, tz);
+      const pin = this.insideWalls(kk, plx, plz), tin = this.insideWalls(kk, tlx, tlz);
+      if (pin === tin) continue;
+      const inGate = Math.abs(plx) < 3 && Math.abs(plz - R) < 3.5;
+      if (inGate) return kk.local(0, tin ? R - 4 : R + 4);
+      return kk.local(0, pin ? R - 2.5 : R + 2.5);
+    }
+    return [tx, tz];
+  }
+  nearKingdom(x, z) { let b = null, bd = 1e9; for (const k of this.kingdoms.values()) { const d = Math.hypot(k.x - x, k.z - z); if (d < bd) { bd = d; b = k; } } return bd < 90 ? b : null; }
+  blocked(x0, z0, x1, z1, tx, tz) {
+    for (const k of this.kingdoms.values()) {
+      const R = WALL_R[k.tier] || 0, reach = Math.max(R, 30) + 60;
+      if (Math.abs(x1 - k.x) > reach || Math.abs(z1 - k.z) > reach) continue;
+      const [ax, az] = this.toLocal(k, x0, z0), [bx, bz] = this.toLocal(k, x1, z1);
+      if (R) {
+        const gate = (lx, lz) => lz > 0 && Math.abs(lx) < (k.tier === 1 ? 3.2 : 4.2);
+        if (k.tier === 1) {
+          const r0 = Math.hypot(ax, az) - R, r1 = Math.hypot(bx, bz) - R;
+          if (Math.abs(r1) < 0.7 && Math.abs(r1) < Math.abs(r0) && !gate(bx, bz)) return true;
+          if (r0 * r1 < 0 && !gate(bx, bz)) return true;
+        } else {
+          for (const [u0, u1, v1, side] of [[ax, bx, bz, 'x'], [az, bz, bx, 'z']]) {
+            for (const sgn of [1, -1]) {
+              const w0 = u0 * sgn - R, w1 = u1 * sgn - R;
+              if (Math.abs(v1) > R + 1) continue;
+              const crossing = (w0 * w1 < 0) || (Math.abs(w1) < 0.9 && Math.abs(w1) < Math.abs(w0));
+              if (!crossing) continue;
+              if (side === 'z' && sgn === 1 && Math.abs(v1) < 4.2) continue; // the gate
+              return true;
+            }
+          }
+        }
+      }
+      // the keep / great hall is solid
+      const [hx, hz, cr] = KEEP[k.tier] || KEEP[1];
+      const inKeep = (lx, lz) => (Math.abs(lx) < hx && Math.abs(lz) < hz) || (cr && Math.abs(Math.abs(lx) - hx) < cr && Math.abs(Math.abs(lz) - hz) < cr);
+      if (inKeep(bx, bz) && !inKeep(ax, az)) return true;
+      // houses: solid unless this is the house you are heading into (to sleep or rest)
+      for (const h of k.houses) {
+        const ddx = x1 - h[0], ddz = z1 - h[1];
+        if (ddx * ddx + ddz * ddz > 12) continue;
+        if (Math.hypot(tx - h[0], tz - h[1]) < 3.6) continue;
+        if (Math.hypot(x0 - h[0], z0 - h[1]) < Math.sqrt(ddx * ddx + ddz * ddz)) continue; // already inside: let them out
+        return true;
+      }
+    }
+    return false;
+  }
   moveTo(p, tx, tz, speed, dt) {
-    const dx = tx - p.x, dz = tz - p.z, d = Math.hypot(dx, dz);
-    if (d < 0.8) return true;
+    const fd = Math.hypot(tx - p.x, tz - p.z);
+    if (fd < 0.8) return true;
+    const [gx, gz] = this.route(p, tx, tz);
+    const dx = gx - p.x, dz = gz - p.z, d = Math.max(0.01, Math.hypot(dx, dz));
     const step = Math.min(d, speed * dt);
     let nx = p.x + (dx / d) * step, nz = p.z + (dz / d) * step;
-    if (!this.walkable(nx, nz) && this.walkable(p.x, p.z)) {
-      // steer along the coast
-      let ok = false;
-      for (const a of [0.7, -0.7, 1.4, -1.4]) {
+    const ok = (x, z) => this.walkable(x, z) && !this.blocked(p.x, p.z, x, z, tx, tz);
+    if (!ok(nx, nz) && this.walkable(p.x, p.z)) {
+      // steer along the coast or around the wall
+      let found = false;
+      for (const a of [0.6, -0.6, 1.2, -1.2, 1.8, -1.8]) {
         const ca = Math.cos(a), sa = Math.sin(a);
         const ux = (dx * ca - dz * sa) / d, uz = (dx * sa + dz * ca) / d;
         const ax = p.x + ux * step, az = p.z + uz * step;
-        if (this.walkable(ax, az)) { nx = ax; nz = az; ok = true; break; }
+        if (ok(ax, az)) { nx = ax; nz = az; found = true; break; }
       }
-      if (!ok) return true;
+      if (!found) return fd < 6; // can't get any closer: close enough
     }
     p.heading = Math.atan2(nx - p.x, nz - p.z);
     p.x = nx; p.z = nz;
@@ -992,6 +1093,10 @@ export class Simulation {
           this.minLeft[t.cell] -= take; p.carryMin += take;
           if (t.t > 14 || this.minLeft[t.cell] < 0.5) { t.phase = 2; t.tx = k.x + (r() - 0.5) * 20; t.tz = k.z + (r() - 0.5) * 20; p.thought = 'Hauling ore back to the realm'; }
         } else if (go(walk * 0.85, STATE.WALK)) { k.minerals += p.carryMin; p.carryMin = 0; p.task = null; }
+        break;
+      case 'throne':
+        if (t.phase === 0) { if (go(walk, STATE.WALK) || t.t > 120) { t.phase = 1; t.t = 0; p.x = t.tx; p.z = t.tz; } }
+        else { p.state = STATE.IDLE; p.heading = k.rot || 0; if (t.t > t.until || this.mustHeadHome(p, k)) p.task = null; }
         break;
       case 'rest':
         if (t.phase === 0) { if (go(walk, STATE.WALK)) { t.phase = 1; t.t = 0; } }
@@ -1533,7 +1638,7 @@ export class Simulation {
       buf.writeUInt8((p.sex === 'F' ? 1 : 0) | (ag << 1) | (role << 3) | (p.pregnant ? 64 : 0) | (p.carry > 0.5 || p.carryMin > 0.5 ? 128 : 0), o + 11);
       buf.writeUInt8(Math.max(0, Math.min(255, Math.round(p.health * 2.55))), o + 12);
       buf.writeUInt8(Math.round(((p.heading % 6.2832 + 6.2832) % 6.2832) / 6.2832 * 255), o + 13);
-      buf.writeUInt8((p.sick > 0 ? 1 : 0) | (p.carryMin > 0.5 ? 2 : 0) | (moodOf(this, p) << 2) | (p.task?.type === 'talk' ? 32 : 0) | (p.task?.type === 'sleep' && p.task.phase === 1 ? 64 : 0), o + 14);
+      buf.writeUInt8((p.sick > 0 ? 1 : 0) | (p.carryMin > 0.5 ? 2 : 0) | (moodOf(this, p) << 2) | (p.task?.type === 'talk' ? 32 : 0) | (p.task?.type === 'sleep' && p.task.phase === 1 ? 64 : 0) | (p.task?.type === 'throne' && p.task.phase === 1 ? 128 : 0), o + 14);
       buf.writeUInt8(Math.min(255, Math.floor(p.ageY * 2)), o + 15);
       o += AGENT_BYTES;
     }
