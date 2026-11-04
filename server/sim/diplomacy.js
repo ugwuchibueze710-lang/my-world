@@ -8,6 +8,7 @@ import { kingdomSheet, traits } from './facts.js';
 const pick = (r, a) => a[Math.floor(r() * a.length)];
 const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 
+const RIVALRY = Number(process.env.RIVALRY) || 50;
 export function tensionTick(sim) {
   // tension drifts towards a pressure set by borders, envy, grudges and fear
   const ks = [...sim.kingdoms.values()];
@@ -19,9 +20,11 @@ export function tensionTick(sim) {
     const envy = clamp(Math.abs(k.food / (k.pop + 1) - o.food / (o.pop + 1)) * 2, 0, 15);
     const grudge = ((r1.grudge || 0) + (r2.grudge || 0)) * 25;
     const war = r1.state === 'war' ? 90 : 0, ally = r1.state === 'ally' ? -35 : 0;
-    const target = clamp(border + envy + grudge + war + ally + (k.capital || o.capital ? 10 : 0), 0, 100);
+    // old rivalry: rival crowns covet the whole world, so tension builds even between distant realms
+    const rivalry = ally ? 0 : RIVALRY;
+    const target = clamp(border + envy + grudge + war + ally + rivalry + (k.capital || o.capital ? 10 : 0), 0, 100);
     const t = (r1.tension ?? target);
-    const nt = t + (target - t) * 0.03;
+    const nt = t + (target - t) * 0.06;
     r1.tension = r2.tension = Math.round(nt * 10) / 10;
   }
 }
