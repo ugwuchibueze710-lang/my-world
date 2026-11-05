@@ -40,6 +40,9 @@ export class Horde {
       speed: rand(...T.speed), state: 'idle', cur: null, attackCd: rand(0.5, 1.5), screamed: false, flinch: 0, vel: new THREE.Vector3(), yaw: Math.random() * 6, stuck: 0, lastPos: pos.clone(),
       mats: [], deadT: 0, target: null, phase: Math.random() * 10, bleed: [] };
     inner.traverse((o) => { if (o.isMesh) z.mats.push(o.material); });
+    inner.updateMatrixWorld(true); const hipH = bones.Hips ? Math.max(0.5, bones.Hips.getWorldPosition(new THREE.Vector3()).y - pos.y) : 0.95;
+    z.natural = {}; for (const c of ['anim_z_walk', 'anim_z_walk_creep', 'anim_z_run', 'anim_z_crawl', 'anim_z_runcrawl']) { const sp = this.clips[c].userData?.speedPerHip; z.natural[c] = sp && sp > 0.05 ? sp * hipH : { anim_z_walk: 1.2, anim_z_walk_creep: 0.7, anim_z_run: 3.6, anim_z_crawl: 0.5, anim_z_runcrawl: 1.4 }[c]; }
+    z.baseY = inner.position.y; z.visY = pos.y; z.dir = new THREE.Vector3(); z.flinchCd = 0; z.side = 0;
     this.ctx.scene.add(root); this.list.push(z);
     this.play(z, T.anim, 0); z.A[T.anim].time = Math.random() * 2;
     return z;
@@ -60,7 +63,7 @@ export class Horde {
     const W = this.ctx.world;
     for (const z of this.list) {
       if (!z.alive) continue;
-      z.phase += dt; z.attackCd -= dt; z.flinch = Math.max(0, z.flinch - dt);
+      z.phase += dt; z.attackCd -= dt; z.flinch = Math.max(0, z.flinch - dt); z.flinchCd -= dt;
       const R = z.root.position;
       // nearest living, visible-ish survivor
       let best = null, bd = 1e9; for (const p of players) { if (!p.alive) continue; const d = p.pos.distanceTo(R); if (d < bd) { bd = d; best = p; } }
@@ -89,13 +92,22 @@ export class Horde {
       // shove apart from the pack
       for (const o of this.list) { if (o === z || !o.alive) continue; const dx = R.x - o.root.position.x, dz = R.z - o.root.position.z, d = Math.hypot(dx, dz); if (d < 0.7 && d > 1e-3) { want.x += (dx / d) * (0.7 - d) * 3; want.z += (dz / d) * (0.7 - d) * 3; } }
       // stuck on scan geometry: side-step
-      if (z.stuck > 1.2) { want.applyAxisAngle(new THREE.Vector3(0, 1, 0), z.id % 2 ? 1.3 : -1.3); if (z.stuck > 2.5) z.stuck = 0; }
+      if (z.stuck > 0.8 && !z.side) z.side = (Math.random() < 0.5 ? -1 : 1) * 1.2;
+      if (z.side) { want.applyAxisAngle(new THREE.Vector3(0, 1, 0), z.side); z.sideT = (z.sideT || 0) + dt; if (z.sideT > 1.1) { z.side = 0; z.sideT = 0; z.stuck = 0; } }
       want.y = 0; if (want.lengthSq() > 1e-6) want.normalize();
-      const sp = (z.crawling ? 0.55 : z.speed) * (z.flinch > 0 ? 0.25 : 1) * (dist < z.T.reach ? 0 : 1);
-      z.vel.x += (want.x * sp - z.vel.x) * Math.min(1, dt * 5); z.vel.z += (want.z * sp - z.vel.z) * Math.min(1, dt * 5);
-      this.face(z, dist < 4 ? toP : want, dt * 4);
-      z.state = 'chase'; if (z.cur !== this.locomotion(z) && !(z.busy > 0)) this.play(z, this.locomotion(z), 0.35);
-      const loco = z.A[this.locomotion(z)]; loco.setEffectiveTimeScale(THREE.MathUtils.clamp(Math.hypot(z.vel.x, z.vel.z) / (z.crawling ? 0.55 : z.T.run ? 3.6 : 1.3), 0.4, 1.6));
+      // heading turns smoothly (no snapping between grid cells); body walks where it faces, like a real walker
+      z.dir.lerp(want, Math.min(1, dt * 2.5)); if (z.dir.lengthSq() < 1e-4) z.dir.copy(want); z.dir.normalize();
+      this.face(z, dist < 2.5 ? toP : z.dir, dt * 2.6);
+      const fwd = new THREE.Vector3(Math.sin(z.yaw), 0, Math.cos(z.yaw));
+      const name = this.locomotion(z), nat = z.natural[name] || 1;
+      // play the cycle at a rate that matches the speed we want, then move exactly as fast as the feet say
+      const desired = (z.crawling ? nat : z.speed) * (dist < z.T.reach ? 0 : 1);
+      const rate = THREE.MathUtils.clamp(desired / nat, 0.6, 1.5);
+      const align = Math.max(0, fwd.dot(z.dir)); // slow down while turning
+      const sp = desired > 0 ? nat * rate * (0.35 + 0.65 * align) * (z.flinch > 0 ? 0.3 : 1) : 0;
+      z.vel.x += (fwd.x * sp - z.vel.x) * Math.min(1, dt * 6); z.vel.z += (fwd.z * sp - z.vel.z) * Math.min(1, dt * 6);
+      z.state = 'chase'; if (z.cur !== name && !(z.busy > 0)) this.play(z, name, 0.4);
+      z.A[name].setEffectiveTimeScale(desired > 0 ? rate * (0.5 + 0.5 * align) : 0.3);
     }
   }
   face(z, dir, k) { const want = Math.atan2(dir.x, dir.z); z.yaw += angDiff(want, z.yaw) * Math.min(1, k); }
@@ -127,6 +139,7 @@ export class Horde {
         if (z.deadT > 28) { this.ctx.scene.remove(z.root); this.list.splice(i, 1); continue; }
       }
       z.root.rotation.y = z.yaw;
+      if (z.baseY !== undefined) { z.visY += (R.y - z.visY) * Math.min(1, dt * 9); if (Math.abs(R.y - z.visY) > 0.6) z.visY = R.y; z.inner.position.y = z.baseY + (z.visY - R.y); }
       // bleeding stumps
       for (const b of z.bleed) { b.t -= dt; if (b.t > 0 && Math.random() < dt * 30) { const p = b.bone.getWorldPosition(new THREE.Vector3()); this.ctx.fx.blood(p, new THREE.Vector3(rand(-0.3, 0.3), -0.2, rand(-0.3, 0.3)), 2, 1.5); } }
       z.mixer.update(dt);
@@ -182,7 +195,7 @@ export class Horde {
     }
     if (zone === 'head' && z.severed.head) z.hp = 0;
     // a stagger on heavy hits
-    if (z.alive && z.hp > 0 && !(z.busy > 0) && (opts.melee || Math.random() < 0.25)) { const n = opts.melee || Math.random() < 0.4 ? 'anim_z_hit_stumble' : 'anim_z_hit_flinch'; z.busy = this.play(z, n, 0.08, 1.3).getClip().duration / 1.3 * 0.75; z.state = 'hit'; this.ctx.net?.zfx({ id: z.id, fx: 'anim', anim: n }); }
+    if (z.alive && z.hp > 0 && !(z.busy > 0) && (opts.melee || (z.flinchCd <= 0 && (zone === 'head' || dmg * mult > 40 || Math.random() < 0.3)))) { z.flinchCd = rand(1.6, 2.6); const n = opts.melee || Math.random() < 0.4 ? 'anim_z_hit_stumble' : 'anim_z_hit_flinch'; z.busy = this.play(z, n, 0.08, 1.3).getClip().duration / 1.3 * 0.75; z.state = 'hit'; this.ctx.net?.zfx({ id: z.id, fx: 'anim', anim: n }); }
     z.vel.addScaledVector(new THREE.Vector3(dir.x, 0, dir.z).normalize(), opts.push ?? 0.8);
     if (z.hp <= 0) { this.kill(z, dir, zone); return 'kill'; }
     return res;

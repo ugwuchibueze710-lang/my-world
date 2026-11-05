@@ -12,6 +12,9 @@ export async function loadClip(name) {
   if (!clipCache.has(name)) clipCache.set(name, loader.loadAsync(`/assets/anims/${name}.glb`).then((g) => {
     const c = g.animations[0]; c.name = name;
     c.tracks = c.tracks.filter((t) => !/\.scale$/.test(t.name)); // Mixamo scale tracks fight our per-char scaling
+    // how fast the authored cycle actually travels, in hip-heights per second (so feet never slide)
+    const hp = c.tracks.find((t) => /Hips\.position$/.test(t.name.replace(/_\d+(?=\.)/, '')));
+    if (hp) { const v = hp.values, n = v.length / 3, dx = v[(n - 1) * 3] - v[0], dz = v[(n - 1) * 3 + 2] - v[2]; c.userData = { speedPerHip: Math.hypot(dx, dz) / (c.duration || 1) / (Math.abs(v[1]) || 1) }; }
     return c;
   }));
   return clipCache.get(name);

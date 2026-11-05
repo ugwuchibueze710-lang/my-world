@@ -306,8 +306,28 @@ new GLTFLoader().load('/assets/ak74m_arms.glb', (g) => {
   model.position.copy(head.getWorldPosition(new THREE.Vector3()).applyMatrix4(new THREE.Matrix4().copy(model.matrixWorld).invert())).negate();
   Object.assign(VM, { ready: true, model, holder, mixer, A, rif: bone('Rif_059'), muzzle: bone('Rif_end_079'), pmag: bone('Pmag_062'), cur: 'AK_Idle', baseQ: holder.quaternion.clone() });
   VM.durations = Object.fromEntries(g.animations.map((c) => [c.name.replace('Rig|', ''), c.duration]));
+  buildOptic();
   if (game.state === 'play') vmDraw();
 }, undefined, (e) => console.warn('weapon model failed', e));
+// a holographic red-dot sight on the rail (COD-style ADS): you look straight through the glass at a red dot
+function buildOptic() {
+  VM.model.updateMatrixWorld(true);
+  const e = VM.muzzle.getWorldPosition(new THREE.Vector3()), r = VM.rif.getWorldPosition(new THREE.Vector3());
+  const d = e.clone().sub(r).normalize(), wy = new THREE.Vector3(0, 1, 0).applyQuaternion(VM.holder.getWorldQuaternion(new THREE.Quaternion()));
+  const up = wy.addScaledVector(d, -wy.dot(d)).normalize(), side = new THREE.Vector3().crossVectors(d, up).normalize();
+  const k = window.__optic || {}; const center = e.clone().addScaledVector(d, k.back ?? -0.17).addScaledVector(up, k.h ?? 0.17);
+  const g = new THREE.Group(); g.position.copy(center); g.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(side, up, d.clone().negate())); // local -Z = down the barrel
+  const black = new THREE.MeshStandardMaterial({ color: 0x141516, metalness: 0.6, roughness: 0.45 });
+  const box = (w, h, l, x, y, z) => { const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, l), black); m.position.set(x, y, z); m.frustumCulled = false; g.add(m); };
+  // hood: two side walls + roof around a square window, a base and a rail clamp
+  box(0.006, 0.05, 0.075, -0.026, 0, 0); box(0.006, 0.05, 0.075, 0.026, 0, 0); box(0.058, 0.006, 0.075, 0, 0.026, 0); box(0.058, 0.016, 0.085, 0, -0.03, 0); box(0.03, 0.03, 0.05, 0, -0.05, 0.01);
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(0.046, 0.046), new THREE.MeshPhysicalMaterial({ color: 0x9fd6ff, transparent: true, opacity: 0.12, roughness: 0.05, metalness: 0, depthWrite: false }));
+  glass.position.z = -0.03; glass.frustumCulled = false; g.add(glass);
+  const dotC = document.createElement('canvas'); dotC.width = dotC.height = 64; const x = dotC.getContext('2d'); const gr = x.createRadialGradient(32, 32, 0, 32, 32, 30); gr.addColorStop(0, 'rgba(255,60,40,1)'); gr.addColorStop(0.25, 'rgba(255,30,20,0.9)'); gr.addColorStop(1, 'rgba(255,0,0,0)'); x.fillStyle = gr; x.fillRect(0, 0, 64, 64);
+  const dot = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(dotC), depthTest: false, transparent: true, toneMapped: false, blending: THREE.AdditiveBlending })); dot.position.z = -0.031; dot.scale.setScalar(0.006); dot.renderOrder = 10; g.add(dot);
+  const front = new THREE.Object3D(); front.position.z = -0.03; g.add(front); const rear = new THREE.Object3D(); rear.position.z = 0.04; g.add(rear);
+  VM.rif.attach(g); Object.assign(VM, { optic: g, opticFront: front, opticRear: rear, dot });
+}
 function vmWeights(dt) {
   const busy = P.reloading > 0 || (VM.drawT || 0) > 0;
   VM.drawT = Math.max(0, (VM.drawT || 0) - dt);
@@ -703,7 +723,7 @@ function update(dt) {
   const bobY = Math.sin(P.bob * 2) * 0.03 * (1 - P.ads * 0.85), bobX = Math.cos(P.bob) * 0.022 * (1 - P.ads * 0.85);
   camera.position.set(P.pos.x + (Math.random() - 0.5) * P.shake * 0.1, P.pos.y + P.eyeY + bobY + (Math.random() - 0.5) * P.shake * 0.1, P.pos.z);
   camera.rotation.set(P.pitch + P.recoil, P.yaw + P.recoilYaw, game.state === 'dying' ? Math.min(0.7, game.deadT * 0.6) : P.life === 'downed' ? 0.25 : 0);
-  const fov = 74 - P.ads * (window.__zoom ?? 12); if (Math.abs(camera.fov - fov) > 0.05) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  const fov = 74 - P.ads * (window.__zoom ?? 16); if (Math.abs(camera.fov - fov) > 0.05) { camera.fov = fov; camera.updateProjectionMatrix(); }
   // the sun's shadow box follows the player
   if (LEVELS[game.level] && !LEVELS[game.level].dark) { const off = sun.position.clone().sub(sun.target.position); sun.target.position.copy(P.pos); sun.position.copy(P.pos).add(off); }
   // viewmodel
@@ -718,12 +738,10 @@ function update(dt) {
     VM.holder.quaternion.copy(VM.baseQ); VM.holder.position.copy(VM_HIP).add(new THREE.Vector3(bobX * 0.4 + VM.swayX, bobY * 0.35, P.kick * 0.05));
     if (P.ads > 0.01) {
       camera.updateMatrixWorld(true); VM.holder.updateMatrixWorld(true);
-      const m = camera.worldToLocal(VM.muzzle.getWorldPosition(new THREE.Vector3())), r = camera.worldToLocal(VM.rif.getWorldPosition(new THREE.Vector3()));
-      const d = m.clone().sub(r).normalize(), up = new THREE.Vector3(0, 1, 0).addScaledVector(d, -d.y).normalize();
-      const F = m.clone().addScaledVector(d, -SIGHT_FRONT).addScaledVector(up, SIGHT_H), R = m.clone().addScaledVector(d, -SIGHT_REAR).addScaledVector(up, SIGHT_H);
+      const F = camera.worldToLocal(VM.opticFront.getWorldPosition(new THREE.Vector3())), R = camera.worldToLocal(VM.opticRear.getWorldPosition(new THREE.Vector3()));
       const q = new THREE.Quaternion().setFromUnitVectors(F.clone().sub(R).normalize(), new THREE.Vector3(0, 0, -1));
       const hp = VM.holder.position.clone(), R2 = R.clone().sub(hp).applyQuaternion(q).add(hp);
-      const ER = window.__er ?? EYE_RELIEF; const tt = new THREE.Vector3(0, 0, -ER).sub(R2);
+      const ER = window.__er ?? 0.3; const tt = new THREE.Vector3(0, 0, -ER).sub(R2);
       VM.holder.quaternion.premultiply(new THREE.Quaternion().slerp(q, P.ads)); VM.holder.position.addScaledVector(tt, P.ads);
     }
     if ((P.meleeT || 0) > 0) { P.meleeT = Math.max(0, P.meleeT - dt); const k = 1 - P.meleeT / 0.55, sw = Math.sin(Math.min(1, k * 1.6) * Math.PI); VM.holder.position.add(new THREE.Vector3(-0.12 * sw, 0.06 * sw, -0.3 * sw)); VM.holder.quaternion.premultiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5 * sw, 0.35 * sw, 0.9 * sw))); }
