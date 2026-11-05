@@ -3,6 +3,7 @@ import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { createStore } from './store.js';
+import { attachRooms } from './rooms.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const PORT = process.env.PORT || 3000;
@@ -12,6 +13,7 @@ let board = (await store.load())?.board || [];
 const app = express();
 app.use(express.json({ limit: '4kb' }));
 app.use('/vendor/three', express.static(path.join(ROOT, 'node_modules/three'), { maxAge: '7d' }));
+app.use('/vendor/bvh', express.static(path.join(ROOT, 'node_modules/three-mesh-bvh/build'), { maxAge: '7d' }));
 app.use(express.static(path.join(ROOT, 'public'), { etag: true, setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache') }));
 app.get('/healthz', (req, res) => res.json({ ok: true, scores: board.length, saves: store.kind }));
 app.get('/api/scores', (req, res) => res.json(board.slice(0, 10)));
@@ -28,4 +30,6 @@ app.post('/api/score', (req, res) => {
   store.save({ board });
   res.json({ rank: board.indexOf(entry) + 1, top: board.slice(0, 10) });
 });
-app.listen(PORT, () => console.log(`[http] Neon Siege on :${PORT} (saves: ${store.kind})`));
+const server = app.listen(PORT, () => console.log(`[http] Neon Siege on :${PORT} (saves: ${store.kind})`));
+const co = attachRooms(server);
+app.get('/api/rooms', (req, res) => res.json({ rooms: co.rooms.size }));

@@ -3,68 +3,109 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Neon Siege</title>
+  <title>Dead City: Escape</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@400;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/css/style.css">
   <script type="importmap">{ "imports": { "three": "/vendor/three/build/three.module.js", "three/addons/": "/vendor/three/examples/jsm/" } }</script>
 </head>
 <body>
   <div id="scene"></div>
+  <div id="vignette"></div>
   <div id="hurt"></div>
   <div id="dirs"></div>
 
   <div id="hud" class="hidden">
     <div id="top">
-      <div><b id="h-wave">1</b><small>WAVE</small></div>
-      <div><b id="h-time">0:00</b><small>SURVIVED</small></div>
-      <div><b id="h-kills">0</b><small>KILLS</small></div>
-      <div><b id="h-left">0</b><small>ALIENS LEFT</small></div>
+      <div id="h-chapter">CHAPTER 1</div>
+      <div id="h-obj">Push through the alley</div>
+      <div id="arrow">▲</div>
     </div>
+    <div id="stats"><span>⏱ <b id="h-time">0:00</b></span><span>☠ <b id="h-kills">0</b></span><span>EXIT <b id="h-left">0 m</b></span></div>
+    <div id="h-station"></div><div id="h-tags"></div>
+    <ul id="squad"></ul>
     <div id="banner"></div>
+    <div id="prompt"></div>
     <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i><span id="hitmark"></span></div>
-    <div id="health"><div class="label">HEALTH</div><div class="bar"><div id="h-hp"></div></div><b id="h-hpn">100</b></div>
-    <div id="ammo"><div id="h-weapon">ASSAULT RIFLE</div><div><b id="h-mag">30</b><span id="h-res">/ ∞</span></div><div id="h-reload"></div></div>
+    <div id="health"><div class="bar"><div id="h-hp"></div></div><b id="h-hpn">100</b></div>
+    <div id="ammo"><div id="h-weapon">AK-74M</div><div><b id="h-mag">30</b><span id="h-res">/ 210</span></div><div id="h-reload"></div></div>
     <ul id="killfeed"></ul>
     <div id="pad-tag"></div>
   </div>
 
   <div id="menu">
     <div class="card">
-      <h1>NEON<span>SIEGE</span></h1>
-      <p class="tag">They come through the gate. Survive as long as you can.</p>
-      <label class="name">CALLSIGN <input id="name" maxlength="16" placeholder="Player"></label>
-      <button id="play">PLAY</button>
+      <h1>DEAD CITY<span>ESCAPE</span></h1>
+      <p class="tag">Day 9 of the outbreak. One train leaves the city at dawn. Get your squad to it.</p>
+      <div class="row">
+        <label>CALLSIGN <input id="name" maxlength="16" placeholder="Survivor"></label>
+        <label>OPERATOR <select id="skin"><option value="player_swat">Riot SWAT</option><option value="player_swatguy">Tactical Ops</option><option value="player_gasmask">Gas Mask</option><option value="player_survivor">Survivor</option></select></label>
+        <label>CHAPTER <select id="chapter"></select></label>
+      </div>
+      <div class="buttons">
+        <button id="play">PLAY SOLO</button>
+        <button id="create" class="alt">CREATE SQUAD</button>
+        <div class="join"><input id="code" maxlength="4" placeholder="CODE"><button id="join" class="alt">JOIN</button></div>
+      </div>
+      <p id="menu-msg"></p>
       <p id="pad-status">Mouse &amp; keyboard ready · plug in a PS5 controller and press any button</p>
       <div class="controls">
-        <div><h3>PS5 CONTROLLER</h3><p class="sub">Fortnite default layout</p>
+        <div><h3>PS5 CONTROLLER</h3>
           <table>
-            <tr><td>R2</td><td>Fire</td></tr><tr><td>L2</td><td>Aim down sights</td></tr>
-            <tr><td>Left stick / L3</td><td>Move / Sprint</td></tr><tr><td>Right stick</td><td>Look</td></tr>
-            <tr><td>✕</td><td>Jump</td></tr><tr><td>○</td><td>Crouch · slide</td></tr><tr><td>R3</td><td>Gun-butt melee</td></tr>
-            <tr><td>□</td><td>Reload</td></tr>
-            <tr><td>Options</td><td>Pause</td></tr>
+            <tr><td>R2 / L2</td><td>Fire / Aim down sights</td></tr><tr><td>Left stick · L3</td><td>Move · Sprint</td></tr>
+            <tr><td>✕ / ○</td><td>Jump / Crouch · slide</td></tr><tr><td>□</td><td>Reload</td></tr><tr><td>R3</td><td>Rifle-butt melee</td></tr>
+            <tr><td>△ (hold)</td><td>Revive · pick up dog tags · use station</td></tr><tr><td>Options</td><td>Pause</td></tr>
           </table></div>
-        <div><h3>KEYBOARD &amp; MOUSE</h3><p class="sub">click to lock the mouse</p>
+        <div><h3>KEYBOARD &amp; MOUSE</h3>
           <table>
-            <tr><td>Left click</td><td>Fire</td></tr><tr><td>Right click</td><td>Aim down sights</td></tr>
-            <tr><td>WASD / Shift</td><td>Move / Sprint</td></tr><tr><td>Space</td><td>Jump</td></tr>
-            <tr><td>C / Ctrl</td><td>Crouch · slide</td></tr><tr><td>R</td><td>Reload</td></tr>
-            <tr><td>V</td><td>Gun-butt melee</td></tr><tr><td>F</td><td>Fullscreen</td></tr><tr><td>Esc</td><td>Pause</td></tr>
+            <tr><td>Left / Right click</td><td>Fire / Aim down sights</td></tr><tr><td>WASD · Shift</td><td>Move · Sprint</td></tr>
+            <tr><td>Space / C</td><td>Jump / Crouch · slide</td></tr><tr><td>R</td><td>Reload</td></tr><tr><td>V</td><td>Rifle-butt melee</td></tr>
+            <tr><td>E (hold)</td><td>Revive · pick up dog tags · use station</td></tr><tr><td>F / Esc</td><td>Fullscreen / Pause</td></tr>
           </table></div>
       </div>
       <div id="board"></div>
-      <p class="credit">AK-74M &amp; arms: “<a href="https://sketchfab.com/3d-models/fps-ak-74m-animations-94be8385c402474cacd39bc096c6ca14" target="_blank" rel="noopener">FPS AK-74m animations</a>” by <a href="https://sketchfab.com/ccransh" target="_blank" rel="noopener">Cransh</a>, <a href="http://creativecommons.org/licenses/by/4.0/" target="_blank" rel="noopener">CC BY 4.0</a> · F = fullscreen</p>
+      <p class="credit" id="credits"></p>
     </div>
   </div>
 
+  <div id="lobby" class="hidden">
+    <div class="card small">
+      <h2>SQUAD</h2>
+      <p>Share this code — up to 4 survivors</p>
+      <div id="code-show">----</div>
+      <ul id="roster"></ul>
+      <button id="host-start">START MISSION</button>
+      <p id="lobby-wait">Waiting for the squad leader to start…</p>
+      <p id="lobby-msg"></p>
+      <button id="lobby-leave" class="alt">LEAVE</button>
+    </div>
+  </div>
+
+  <div id="loading" class="hidden">
+    <div class="card small">
+      <h2 id="ld-title">CHAPTER 1</h2>
+      <div id="ld-story"></div>
+      <div class="ldbar"><div id="ld-bar"></div></div>
+    </div>
+  </div>
+
+  <div id="pausehint" class="hidden">Squad game keeps running — click to return</div>
+
   <div id="over" class="hidden">
     <div class="card">
-      <h1 class="dead">YOU DIED</h1>
-      <div class="final"><div><b id="o-time">0:00</b><small>SURVIVED</small></div><div><b id="o-wave">1</b><small>WAVE</small></div><div><b id="o-kills">0</b><small>KILLS</small></div><div><b id="o-hs">0</b><small>HEADSHOTS</small></div></div>
+      <h1 class="dead" id="over-title">YOU DIED</h1>
+      <div class="final"><div><b id="o-time">0:00</b><small>SURVIVED</small></div><div><b id="o-wave">1</b><small>CHAPTER</small></div><div><b id="o-kills">0</b><small>KILLS</small></div><div><b id="o-hs">0</b><small>HEADSHOTS</small></div></div>
       <p id="o-rank"></p>
-      <button id="again">PLAY AGAIN <small>(✕ / Enter)</small></button>
-      <div id="o-board"></div>
+      <button id="again">RETRY CHAPTER <small>(✕ / Enter)</small></button>
+    </div>
+  </div>
+
+  <div id="win" class="hidden">
+    <div class="card">
+      <h1>YOU MADE IT<span>OUT</span></h1>
+      <p class="tag">The train pulls out of the tunnel into the dawn. Behind you, the city burns.</p>
+      <div class="final"><div><b id="w-time">0:00</b><small>TIME</small></div><div><b id="w-kills">0</b><small>KILLS</small></div><div><b id="w-hs">0</b><small>HEADSHOTS</small></div><div><b id="w-sev">0</b><small>LIMBS</small></div></div>
+      <button id="win-again">PLAY AGAIN</button>
     </div>
   </div>
 
