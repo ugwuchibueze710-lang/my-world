@@ -112,9 +112,11 @@ export class Horde {
       } else if (z.alive) {
         z.vel.y -= 18 * dt;
         R.addScaledVector(z.vel, dt);
-        const v = z.vel; if (W.collideCapsule(R, 0.28, z.crawling ? 0.7 : 1.7, v)) v.y = Math.max(0, v.y);
-        // fall off the world? put it back on the nav grid
-        if (R.y < (W.def.floorY ?? 0) - 6) { const c = W.randomCell(null, 0, 1e9); if (c) R.copy(c); }
+        const v = z.vel; let g = W.collideCapsule(R, 0.28, z.crawling ? 0.7 : 1.7, v);
+        if (!g) { const nf = W.navFloor(R); if (isFinite(nf) && R.y < nf + 0.02 && R.y > nf - 1.5) { R.y = nf; g = true; } }
+        if (g) { v.y = Math.max(0, v.y); z.safe = (z.safe || new THREE.Vector3()).copy(R); }
+        // fell through anyway: back to where it last stood, not a random teleport
+        if (z.safe && R.y < z.safe.y - 3) { R.copy(z.safe); v.set(0, 0, 0); }
         const moved = R.distanceTo(z.lastPos); z.stuck = moved < dt * 0.25 && z.state === 'chase' ? z.stuck + dt : Math.max(0, z.stuck - dt); z.lastPos.copy(R);
       }
       if (!z.alive) {

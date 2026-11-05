@@ -621,12 +621,14 @@ function update(dt) {
     for (let s = 0; s < steps; s++) { P.pos.addScaledVector(P.vel, dt / steps); if (world.collideCapsule(P.pos, 0.35, downed ? 0.8 : P.crouch ? 1.2 : 1.8, P.vel)) grounded = true; }
     // step up small ledges / stairs in scans
     if (!grounded) { const fy = world.floorAt(P.pos.x, P.pos.z, P.pos.y + 0.45, 0.6); if (isFinite(fy) && fy <= P.pos.y + 0.45 && fy >= P.pos.y - 0.25 && P.vel.y <= 0.5) { P.pos.y = fy; grounded = true; } }
+    // holes in the scan: the nav grid is the safety floor
+    if (!grounded) { const nf = world.navFloor(P.pos); if (isFinite(nf) && P.pos.y < nf + 0.02 && P.pos.y > nf - 1.5) { P.pos.y = nf; grounded = true; } }
     if (grounded) { if (!P.ground && P.vel.y < -7) { SFX.land(); P.shake += 0.15; } if (P.vel.y < 0) P.vel.y = 0; }
     P.ground = grounded;
     // stay inside the playable area of the scan (no wandering around the outside of the alley walls)
-    if (world.onNav(P.pos, 1.0)) { (P.lastGood ||= new THREE.Vector3()).copy(P.pos); } else if (P.lastGood) { P.pos.x = P.lastGood.x; P.pos.z = P.lastGood.z; P.vel.x *= -0.2; P.vel.z *= -0.2; }
+    if (world.onNav(P.pos, 1.0)) { if (P.ground) (P.lastGood ||= new THREE.Vector3()).copy(P.pos); } else if (P.lastGood) { P.pos.x = P.lastGood.x; P.pos.z = P.lastGood.z; P.vel.x *= -0.2; P.vel.z *= -0.2; }
     // fell through a hole in a scan: put us back on the nav grid
-    if (P.pos.y < (LEVELS[game.level].floorY ?? 0) - 8) { const c = world.randomCell(game.exitPos, 0, 1e9) || new THREE.Vector3(...LEVELS[game.level].start); P.pos.copy(c); P.vel.set(0, 0, 0); }
+    if (P.lastGood && P.pos.y < P.lastGood.y - 4) { P.pos.copy(P.lastGood); P.pos.y += 0.3; P.vel.set(0, 0, 0); }
     const hs = Math.hypot(P.vel.x, P.vel.z);
     if (P.ground && hs > 1 && P.slide <= 0) { P.stepT -= dt * hs; if (P.stepT <= 0) { P.stepT = sprint ? 2.6 : 2.2; SFX.step(sprint); } }
     P.bob += dt * hs * 1.5;

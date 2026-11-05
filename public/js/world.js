@@ -83,9 +83,9 @@ export class World {
           const d = tri.closestPointToSegment(seg, _p1, _p2);
           if (d < r) {
             const n = _p2.clone().sub(_p1).normalize(), depth = r - d;
-            if (n.y > 0.6) grounded = true;                        // floor-like
-            if (n.y > 0.6) n.set(0, 1, 0);                         // stand on slopes and rubble without sliding
-            else if (n.y < -0.6) { /* ceiling */ } else n.y = 0, n.normalize();
+            if (n.y < -0.3) { if (vel && vel.y > 0) vel.y = 0; return; }   // ceilings/beams: stop rising, never push down through the floor
+            if (n.y > 0.6) { grounded = true; n.set(0, 1, 0); }          // floor-like: stand on slopes and rubble without sliding
+            else { n.y = 0; if (n.lengthSq() < 1e-8) return; n.normalize(); }
             seg.start.addScaledVector(n, depth); seg.end.addScaledVector(n, depth);
             if (vel) { const vn = vel.dot(n); if (vn < 0) vel.addScaledVector(n, -vn); }
           }
@@ -157,6 +157,8 @@ export class World {
   }
   cellOf(p) { const n = this.nav; if (!n) return -1; const i = Math.floor((p.x - n.ox) / n.S), k = Math.floor((p.z - n.oz) / n.S); if (i < 0 || k < 0 || i >= n.nx || k >= n.nz) return -1; const c = i * n.nz + k; if (!isNaN(n.H[c])) return c; // nearest walkable around
     let best = -1, bd = 9; for (let a = -2; a <= 2; a++) for (let b = -2; b <= 2; b++) { const ii = i + a, kk = k + b; if (ii < 0 || kk < 0 || ii >= n.nx || kk >= n.nz) continue; const cc = ii * n.nz + kk; if (!isNaN(n.H[cc]) && a * a + b * b < bd) { bd = a * a + b * b; best = cc; } } return best; }
+  // floor height from the nav grid at p (filled over scan holes); NaN if not walkable
+  navFloor(p) { const n = this.nav; if (!n) return NaN; const i = Math.floor((p.x - n.ox) / n.S), k = Math.floor((p.z - n.oz) / n.S); if (i < 0 || k < 0 || i >= n.nx || k >= n.nz) return NaN; return n.H[i * n.nz + k]; }
   // is p on (or right next to) walkable ground? keeps survivors inside the playable part of a scan
   onNav(p, slack = 1.2) {
     const n = this.nav; if (!n) return true; const r = Math.ceil(slack / n.S), i0 = Math.floor((p.x - n.ox) / n.S), k0 = Math.floor((p.z - n.oz) / n.S);
