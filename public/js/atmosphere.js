@@ -12,7 +12,7 @@ export class Atmosphere {
     this.sun = new THREE.Vector3();
   }
 
-  apply(def, bounds) {
+  apply(def, bounds, minFloor) {
     const s = this.scene, g = this.group; g.clear();
     const outdoor = !def.dark;
     const fogCol = new THREE.Color(def.fog[0]);
@@ -40,7 +40,7 @@ export class Atmosphere {
     s.environmentIntensity = outdoor ? 0.55 : 0.25;
     // endless ground under and around the scan (no floating island)
     const b = bounds, cx = (b.min.x + b.max.x) / 2, cz = (b.min.z + b.max.z) / 2;
-    const groundY = outdoor ? (def.floorY ?? 0) - 0.25 : b.min.y - 0.5;
+    const groundY = Math.min(outdoor ? (minFloor ?? def.floorY ?? 0) - 0.35 : b.min.y - 0.5, (minFloor ?? 0) - 0.35);
     const tex = groundTexture(outdoor);
     tex.repeat.set(300, 300);
     const ground = new THREE.Mesh(new THREE.PlaneGeometry(2400, 2400), new THREE.MeshStandardMaterial({ map: tex, color: outdoor ? 0x8b8478 : 0x2a2622, roughness: 0.97 }));

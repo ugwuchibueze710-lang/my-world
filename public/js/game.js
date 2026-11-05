@@ -197,7 +197,7 @@ async function loadLevelNow(idx, opts = {}) {
   horde.clear(); props.clear(); clearDecals(); stationMesh.visible = false; for (const t of tagMeshes.values()) scene.remove(t); tagMeshes.clear();
   await world.load(def, (e) => { if (e.total) $('ld-bar').style.width = `${5 + (e.loaded / e.total) * 70}%`; });
   $('ld-bar').style.width = '80%';
-  const a = atmos.apply(def, world.bounds);
+  const a = atmos.apply(def, world.bounds, world.minFloor());
   hemi.color.set(def.hemi[0]); hemi.groundColor.set(def.hemi[1]); hemi.intensity = def.hemi[2];
   sun.color.set(def.sun[0]); sun.intensity = def.sun[1]; renderer.toneMappingExposure = def.exposure;
   const c = world.bounds.getCenter(new THREE.Vector3()); sun.target.position.copy(c); sun.position.copy(c).add(a.outdoor ? a.sunDir.clone().multiplyScalar(80) : new THREE.Vector3(...def.sun[2]));
@@ -290,7 +290,7 @@ function explode(p, r, dmg) {
 const viewmodel = new THREE.Group(); camera.add(viewmodel);
 const VM = { ready: false };
 const VM_HIP = new THREE.Vector3(0.035, -0.055, -0.13);
-const MUZZLE_AHEAD = 0.33, SIGHT_H = 0.15, SIGHT_FRONT = 0.035, SIGHT_REAR = 0.42, EYE_RELIEF = 0.24;
+const MUZZLE_AHEAD = 0.33, SIGHT_H = 0.15, SIGHT_FRONT = 0.035, SIGHT_REAR = 0.42, EYE_RELIEF = 0.42;
 const vmFill = new THREE.PointLight(0xdfe8ff, 0.9, 2.5, 1.5); vmFill.position.set(0.3, 0.25, 0.2); camera.add(vmFill);
 new GLTFLoader().load('/assets/ak74m_arms.glb', (g) => {
   const model = g.scene, holder = new THREE.Group();
@@ -623,6 +623,7 @@ function update(dt) {
     if (!grounded) { const fy = world.floorAt(P.pos.x, P.pos.z, P.pos.y + 0.45, 0.6); if (isFinite(fy) && fy <= P.pos.y + 0.45 && fy >= P.pos.y - 0.25 && P.vel.y <= 0.5) { P.pos.y = fy; grounded = true; } }
     // holes in the scan: the nav grid is the safety floor
     if (!grounded) { const nf = world.navFloor(P.pos); if (isFinite(nf) && P.pos.y < nf + 0.02 && P.pos.y > nf - 1.5) { P.pos.y = nf; grounded = true; } }
+    if (!grounded && world.clampToNav(P.pos, P.vel)) grounded = true;
     if (grounded) { if (!P.ground && P.vel.y < -7) { SFX.land(); P.shake += 0.15; } if (P.vel.y < 0) P.vel.y = 0; }
     P.ground = grounded;
     // stay inside the playable area of the scan (no wandering around the outside of the alley walls)
@@ -702,7 +703,7 @@ function update(dt) {
   const bobY = Math.sin(P.bob * 2) * 0.03 * (1 - P.ads * 0.85), bobX = Math.cos(P.bob) * 0.022 * (1 - P.ads * 0.85);
   camera.position.set(P.pos.x + (Math.random() - 0.5) * P.shake * 0.1, P.pos.y + P.eyeY + bobY + (Math.random() - 0.5) * P.shake * 0.1, P.pos.z);
   camera.rotation.set(P.pitch + P.recoil, P.yaw + P.recoilYaw, game.state === 'dying' ? Math.min(0.7, game.deadT * 0.6) : P.life === 'downed' ? 0.25 : 0);
-  const fov = 74 - P.ads * 20; if (Math.abs(camera.fov - fov) > 0.05) { camera.fov = fov; camera.updateProjectionMatrix(); }
+  const fov = 74 - P.ads * (window.__zoom ?? 12); if (Math.abs(camera.fov - fov) > 0.05) { camera.fov = fov; camera.updateProjectionMatrix(); }
   // the sun's shadow box follows the player
   if (LEVELS[game.level] && !LEVELS[game.level].dark) { const off = sun.position.clone().sub(sun.target.position); sun.target.position.copy(P.pos); sun.position.copy(P.pos).add(off); }
   // viewmodel
@@ -722,7 +723,7 @@ function update(dt) {
       const F = m.clone().addScaledVector(d, -SIGHT_FRONT).addScaledVector(up, SIGHT_H), R = m.clone().addScaledVector(d, -SIGHT_REAR).addScaledVector(up, SIGHT_H);
       const q = new THREE.Quaternion().setFromUnitVectors(F.clone().sub(R).normalize(), new THREE.Vector3(0, 0, -1));
       const hp = VM.holder.position.clone(), R2 = R.clone().sub(hp).applyQuaternion(q).add(hp);
-      const tt = new THREE.Vector3(0, 0, -EYE_RELIEF).sub(R2);
+      const ER = window.__er ?? EYE_RELIEF; const tt = new THREE.Vector3(0, 0, -ER).sub(R2);
       VM.holder.quaternion.premultiply(new THREE.Quaternion().slerp(q, P.ads)); VM.holder.position.addScaledVector(tt, P.ads);
     }
     if ((P.meleeT || 0) > 0) { P.meleeT = Math.max(0, P.meleeT - dt); const k = 1 - P.meleeT / 0.55, sw = Math.sin(Math.min(1, k * 1.6) * Math.PI); VM.holder.position.add(new THREE.Vector3(-0.12 * sw, 0.06 * sw, -0.3 * sw)); VM.holder.quaternion.premultiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5 * sw, 0.35 * sw, 0.9 * sw))); }

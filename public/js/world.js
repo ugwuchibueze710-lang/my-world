@@ -29,9 +29,11 @@ export class World {
       const src = o.geometry.attributes.position, f = new Float32Array(src.count * 3);
       for (let i = 0; i < src.count; i++) { f[i * 3] = src.getX(i); f[i * 3 + 1] = src.getY(i); f[i * 3 + 2] = src.getZ(i); }
       const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(f, 3));
-      if (o.geometry.index) geo.setIndex(Array.from(o.geometry.index.array));
+      let idx = o.geometry.index ? Array.from(o.geometry.index.array) : [...Array(src.count).keys()];
+      if (o.matrixWorld.determinant() < 0) for (let i = 0; i < idx.length; i += 3) { const t = idx[i + 1]; idx[i + 1] = idx[i + 2]; idx[i + 2] = t; } // mirrored copy: keep faces pointing the right way
+      geo.setIndex(idx);
       geo.applyMatrix4(o.matrixWorld);
-      geos.push(geo.index ? geo : geo.setIndex([...Array(geo.attributes.position.count).keys()]));
+      geos.push(geo);
     });
     this.envAnim = g.animations.length ? new THREE.AnimationMixer(m) : null;
     if (this.envAnim) for (const c of g.animations) this.envAnim.clipAction(c).play();
@@ -123,7 +125,7 @@ export class World {
       while (guard++ < 6) {
         _ray.origin.set(x, y0, z); _ray.direction.set(0, -1, 0);
         const h = this.bvh.raycastFirst(_ray, THREE.DoubleSide); if (!h) break;
-        const fy = h.point.y, ny = Math.abs(h.face.normal.y);
+        const fy = h.point.y, ny = def.anyNormal ? Math.abs(h.face.normal.y) : h.face.normal.y;
         if (ny > 0.7 && fy < b.max.y) {
           _ray.origin.set(x, fy + 0.05, z); _ray.direction.set(0, 1, 0);
           const up = this.bvh.raycastFirst(_ray, THREE.DoubleSide);
@@ -159,6 +161,10 @@ export class World {
     let best = -1, bd = 9; for (let a = -2; a <= 2; a++) for (let b = -2; b <= 2; b++) { const ii = i + a, kk = k + b; if (ii < 0 || kk < 0 || ii >= n.nx || kk >= n.nz) continue; const cc = ii * n.nz + kk; if (!isNaN(n.H[cc]) && a * a + b * b < bd) { bd = a * a + b * b; best = cc; } } return best; }
   // floor height from the nav grid at p (filled over scan holes); NaN if not walkable
   navFloor(p) { const n = this.nav; if (!n) return NaN; const i = Math.floor((p.x - n.ox) / n.S), k = Math.floor((p.z - n.oz) / n.S); if (i < 0 || k < 0 || i >= n.nx || k >= n.nz) return NaN; return n.H[i * n.nz + k]; }
+  // lowest walkable floor in the level (the backdrop ground goes under this)
+  minFloor() { const n = this.nav; let m = Infinity; if (n) for (const h of n.H) if (!isNaN(h) && h < m) m = h; return isFinite(m) ? m : (this.def.floorY ?? 0); }
+  // never let anything end up under the walkable floor
+  clampToNav(p, vel) { const c = this.cellOf(p); if (c < 0) return false; const h = this.nav.H[c]; if (p.y < h - 0.05 && p.y > h - 30) { p.y = h; if (vel && vel.y < 0) vel.y = 0; return true; } return false; }
   // is p on (or right next to) walkable ground? keeps survivors inside the playable part of a scan
   onNav(p, slack = 1.2) {
     const n = this.nav; if (!n) return true; const r = Math.ceil(slack / n.S), i0 = Math.floor((p.x - n.ox) / n.S), k0 = Math.floor((p.z - n.oz) / n.S);

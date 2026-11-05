@@ -39,7 +39,7 @@ export const LEVELS = [
     story: ['The old platform. Overgrown, but the line is still here.', 'Hold the platform until the signal box is open.'],
     objective: 'Cross the platform to the signal box',
     bounds: [[-22, -2, -22.7], [22.3, 8, 19.3]], cell: 0.6, floorY: 4.5,
-    start: [-2.5, 6.2, -21.2], exit: [-17.5, 1.8, -8.6],
+    start: [20.9, 4.8, -10.4], exit: [-13.3, 5.5, -17.6],
     fog: [0xa9b2b8, 0.01], sky: 0xaab4bb, sun: [0xfff6e6, 2.2, [30, 50, 20]], hemi: [0xdfe8f0, 0x4a5a3a, 1.2], exposure: 1.0,
     zombies: { max: 18, total: 50, types: ['scan_z1', 'scan_z2', 'scan_z4', 'girlscout', 'zombiegirl', 'copzombie', 'warzombie', 'parasite'] }, lit: true,
     props: [{ kind: 'wreck', at: [-8, 6, -15] }, { kind: 'barrel', at: [-5, 6, -19] }, { kind: 'barrel', at: [-12, 6, -12] }, { kind: 'crate', at: [-4, 6, -17] }],
