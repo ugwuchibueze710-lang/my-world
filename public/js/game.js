@@ -301,7 +301,7 @@ function osc(type, f0, f1, dur, vol, dest = master, at = 0) {
 const SFX = {
   shot(w) {
     if (!ac) return;
-    const k = { rifle: [0.16, 1400, 0.5], shotgun: [0.42, 700, 0.9], pistol: [0.12, 2000, 0.45] }[w];
+    const k = { ak: [0.2, 1150, 0.6], rifle: [0.16, 1400, 0.5], shotgun: [0.42, 700, 0.9], pistol: [0.12, 2000, 0.45] }[w] || [0.18, 1300, 0.5];
     noise(k[0], k[1], 0.7, k[2]); noise(0.03, 5000, 0.5, 0.35, 'highpass'); osc('sine', 120, 38, k[0] * 1.3, 0.7);
     noise(k[0] * 1.2, k[1] * 0.6, 0.6, k[2] * 0.4, 'bandpass', verb);
   },
@@ -310,6 +310,8 @@ const SFX = {
   pump() { if (ac) { noise(0.06, 1200, 2, 0.35, 'bandpass', master, 0.18); noise(0.05, 1600, 3, 0.3, 'bandpass', master, 0.32); } },
   flesh(pos, head) { if (!ac) return; const d = out(pos); noise(0.09, 500, 1, 0.9, 'lowpass', d); if (head) osc('sine', 1700, 1500, 0.07, 0.18); },
   ping() { if (ac) osc('triangle', 1400, 1400, 0.06, 0.12); },
+  swing() { if (ac) noise(0.18, 900, 0.8, 0.35, 'bandpass'); },
+  butt() { if (ac) { osc('sine', 110, 45, 0.18, 0.9); noise(0.12, 400, 1, 0.8, 'lowpass'); noise(0.05, 2400, 2, 0.3, 'bandpass'); } },
   screech(pos, type) {
     if (!ac) return; const d = out(pos);
     const f = type === 'brute' ? 140 : type === 'spitter' ? 520 : 760;
@@ -376,7 +378,7 @@ new GLTFLoader().load('/assets/ak74m_arms.glb', (g) => {
   holder.add(model); viewmodel.add(holder); holder.rotation.y = Math.PI; // the rig faces +Z; our camera looks down -Z
   const mixer = new THREE.AnimationMixer(model), A = {};
   for (const c of g.animations) A[c.name.replace('Rig|', '')] = mixer.clipAction(c);
-  for (const k of ['AK_Shot', 'AK_Reload', 'AK_Reload_full', 'AK_Reload_var2', 'AK_Draw']) { A[k].setLoop(THREE.LoopOnce, 1); A[k].clampWhenFinished = true; }
+  for (const k of ['AK_Shot', 'AK_Reload', 'AK_Reload_full', 'AK_Reload_var2', 'AK_Draw']) { A[k].setLoop(THREE.LoopOnce, 1); A[k].clampWhenFinished = k !== 'AK_Shot'; }
   for (const k of ['AK_Idle', 'AK_Walk', 'AK_Run']) { A[k].play(); A[k].setEffectiveWeight(k === 'AK_Idle' ? 1 : 0); }
   mixer.update(0.01); model.updateMatrixWorld(true);
   const bone = (n) => model.getObjectByName(n);
@@ -384,6 +386,7 @@ new GLTFLoader().load('/assets/ak74m_arms.glb', (g) => {
   model.position.copy(head.getWorldPosition(new THREE.Vector3()).applyMatrix4(new THREE.Matrix4().copy(model.matrixWorld).invert())).negate();
   Object.assign(VM, { ready: true, model, holder, mixer, A, base: A.AK_Idle, rif: bone('Rif_059'), muzzle: bone('Rif_end_079'), pmag: bone('Pmag_062'), cur: 'AK_Idle', baseQ: holder.quaternion.clone() });
   VM.durations = Object.fromEntries(g.animations.map((c) => [c.name.replace('Rig|', ''), c.duration]));
+  try { renderer.compile(scene, camera); } catch {}
   if (game.state === 'play') vmDraw();
 }, undefined, (e) => console.warn('weapon model failed', e));
 function vmPlayBase(name) { if (VM.ready) VM.cur = name; }
@@ -477,6 +480,7 @@ function onKey(code) {
   if (code === 'KeyR') reload();
   if (code === 'Digit1') setWeapon(0); if (code === 'Digit2') setWeapon(1); if (code === 'Digit3') setWeapon(2);
   if (code === 'Space') jump();
+  if (code === 'KeyV' || code === 'KeyQ') melee();
   if (code === 'KeyC' || code === 'ControlLeft') crouchPress();
 }
 // PS5 / standard gamepad, Fortnite default ("Combat Pro"-style) layout
@@ -490,17 +494,25 @@ function pollPad(dt) {
   const gp = padIdx >= 0 ? navigator.getGamepads()[padIdx] : [...(navigator.getGamepads?.() || [])].find(Boolean);
   if (!gp) { pad.lx = pad.ly = pad.rx = pad.ry = pad.l2 = pad.r2 = 0; return; }
   padIdx = gp.index;
-  const bt = (i) => gp.buttons[i]?.pressed, edge = (i) => bt(i) && !padPrev[i];
+  let bt = (i) => gp.buttons[i]?.pressed, edge = (i) => bt(i) && !padPrev[i];
   const dz = (x, y) => { const m = Math.hypot(x, y); if (m < 0.13) return [0, 0]; const k = (m - 0.13) / (0.87 * m); return [x * k, y * k]; };
-  [pad.lx, pad.ly] = dz(gp.axes[0] || 0, gp.axes[1] || 0); [pad.rx, pad.ry] = dz(gp.axes[2] || 0, gp.axes[3] || 0);
-  pad.l2 = gp.buttons[B.L2]?.value || 0; pad.r2 = gp.buttons[B.R2]?.value || 0;
+  const std = gp.mapping === 'standard' || !/054c|sony|dualsense|wireless controller/i.test(gp.id);
+  // raw Sony layout: buttons 0 □ 1 ✕ 2 ○ 3 △ 4 L1 5 R1 6 L2 7 R2 8 Create 9 Options 10 L3 11 R3; axes 0 LX 1 LY 2 RX 3 L2 4 R2 5 RY
+  const MAP = std ? null : [1, 2, 0, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+  const btn = (i) => gp.buttons[MAP ? MAP[i] ?? i : i];
+  bt = (i) => btn(i)?.pressed; edge = (i) => bt(i) && !padPrev[i];
+  [pad.lx, pad.ly] = dz(gp.axes[0] || 0, gp.axes[1] || 0);
+  [pad.rx, pad.ry] = std ? dz(gp.axes[2] || 0, gp.axes[3] || 0) : dz(gp.axes[2] || 0, gp.axes[5] || 0);
+  pad.l2 = btn(B.L2)?.value || (!std && gp.axes[3] !== undefined ? (gp.axes[3] + 1) / 2 : 0);
+  pad.r2 = btn(B.R2)?.value || (!std && gp.axes[4] !== undefined ? (gp.axes[4] + 1) / 2 : 0);
   const any = gp.buttons.some((b) => b.pressed) || Math.abs(pad.lx) + Math.abs(pad.rx) + Math.abs(pad.ly) + Math.abs(pad.ry) > 0;
   if (any) usingPad = true;
   if (game.state !== 'play') {
     if ((edge(B.CROSS) || edge(B.OPTIONS)) && ['menu', 'paused', 'over'].includes(game.state)) start();
   } else {
     if (edge(B.CROSS)) jump();
-    if (edge(B.CIRCLE) || edge(B.R3)) crouchPress();
+    if (edge(B.CIRCLE)) crouchPress();
+    if (edge(B.R3)) melee();
     if (edge(B.SQUARE)) reload();
     if (edge(B.TRIANGLE) || edge(B.R1)) switchWeapon(1);
     if (edge(B.L1)) switchWeapon(-1);
@@ -513,7 +525,7 @@ function pollPad(dt) {
     P.yaw -= curve(pad.rx) * sens * dt; P.pitch = clamp(P.pitch - curve(pad.ry) * sens * 0.75 * dt, -1.5, 1.5);
     if (Math.hypot(pad.lx, pad.ly) < 0.2) pad.sprint = false;
   }
-  padPrev = gp.buttons.map((b) => b.pressed);
+  padPrev = Array.from({ length: 16 }, (_, i) => !!bt(i));
   $('pad-tag').textContent = usingPad ? '🎮 CONTROLLER' : '';
 }
 
@@ -532,6 +544,26 @@ function setWeapon(i) {
   P.weapon = 0; P.fireCd = 0.35; P.reloading = 0; updateAmmo();
 }
 function switchWeapon(d) { setWeapon((P.weapon + d + WEAPONS.length) % WEAPONS.length); }
+// gun-butt strike: a quick shove of the stock into whatever is in front of you
+function melee() {
+  if (game.state !== 'play' || (P.meleeT || 0) > 0 || P.reloading > 0) return;
+  P.meleeT = 0.55; P.ads = 0; SFX.swing?.();
+  setTimeout(() => {
+    if (game.state !== 'play') return;
+    const fwd = new THREE.Vector3(-Math.sin(P.yaw), 0, -Math.cos(P.yaw));
+    let hit = false;
+    for (const a of aliens) {
+      if (!a.alive) continue;
+      const d = new THREE.Vector3(a.root.position.x - P.pos.x, 0, a.root.position.z - P.pos.z), dist = d.length();
+      if (dist > 2.4 + a.T.r || d.normalize().dot(fwd) < 0.55) continue;
+      const pt = a.hit[1].o.getWorldPosition(new THREE.Vector3());
+      hit = true; a.stagger = 0.9; a.retreat = 1.2;
+      damageAlien(a, 65, pt, fwd, 0, false);
+      if (a.alive) { a.vel.addScaledVector(fwd, a.type === 'brute' ? 4 : 11); a.vel.y = a.type === 'brute' ? 1 : 3.5; }
+    }
+    if (hit) { SFX.butt(); rumble(1, 0.7, 160); P.shake += 0.25; hitMarker('kill'); } else SFX.swing();
+  }, 140);
+}
 function reload() {
   const w = WEAPONS[P.weapon];
   if (P.reloading > 0 || P.mags[P.weapon] >= w.mag) return;
@@ -855,7 +887,7 @@ function update(dt) {
     P.ads += ((adsHeld && !sprint ? 1 : 0) - P.ads) * Math.min(1, dt * 12);
     P.fireCd -= dt;
     const trigger = mouseDown || pad.r2 > 0.4;
-    if (trigger && (w.auto || !P.triggerHeld)) fire();
+    if (trigger && (w.auto || !P.triggerHeld) && !((P.meleeT || 0) > 0)) fire();
     P.triggerHeld = trigger;
     if (P.reloading > 0) { P.reloading -= dt; if (P.reloading <= 0) { P.mags[P.weapon] = w.mag; vmPlayBase('AK_Idle'); $('h-reload').textContent = ''; updateAmmo(); } }
     // regen
@@ -901,6 +933,12 @@ function update(dt) {
       VM.holder.position.x -= m2.x * P.ads; VM.holder.position.y -= (m2.y + SIGHT_H) * P.ads;
     }
   }
+  if ((P.meleeT || 0) > 0 && VM.ready) {
+    P.meleeT = Math.max(0, P.meleeT - dt);
+    const k = 1 - P.meleeT / 0.55, sw = Math.sin(Math.min(1, k * 1.6) * Math.PI);
+    VM.holder.position.add(new THREE.Vector3(-0.12 * sw, 0.06 * sw, -0.3 * sw));
+    VM.holder.quaternion.premultiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.5 * sw, 0.35 * sw, 0.9 * sw)));
+  }
   P.lookDX = 0;
   if (flash.visible) { flash.position.copy(muzzleWorld()).addScaledVector(new THREE.Vector3(0, 0, -1).applyQuaternion(camera.quaternion), 0.04); flash.userData.t -= dt; if (flash.userData.t <= 0) flash.visible = false; }
   flashLight.intensity *= Math.pow(0.0001, dt);
@@ -913,10 +951,10 @@ function update(dt) {
   updateListener();
 }
 function frame() {
-  const dt = Math.min(clock.getDelta(), 0.05);
-  update(dt);
-  composer.render();
   requestAnimationFrame(frame);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  try { update(dt); } catch (e) { if (!frame.warned) { frame.warned = true; console.error('frame error', e); } }
+  composer.render();
 }
 // menu backdrop: the camera drifts around the arena
 camera.position.set(0, 1.7, 12);
